@@ -1,0 +1,471 @@
+# data paths  
+pretrain_index_file: /home/tkimura4/data/datasets/ACIDS/random_partition_index_vehicle_classification/train_index.txt 
+vehicle_classification:
+        num_classes: 10 
+        class_names: ["background", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+        train_index_file: /home/tkimura4/data/datasets/ACIDS/random_partition_index_vehicle_classification/train_index.txt 
+        val_index_file: /home/tkimura4/data/datasets/ACIDS/random_partition_index_vehicle_classification/val_index.txt  
+        test_index_file: /home/tkimura4/data/datasets/ACIDS/random_partition_index_vehicle_classification/test_index.txt 
+        train_class_count_file: /home/tkimura4/data/datasets/ACIDS/random_partition_index_vehicle_classification/train_class_count.txt
+distance_classification:
+        num_classes: 5
+        class_names: ["5", "10", "25", "50", "75"]
+        train_index_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_distance_classification/train_index.txt 
+        val_index_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_distance_classification/val_index.txt  
+        test_index_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_distance_classification/test_index.txt 
+        train_class_count_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_distance_classification/train_class_count.txt
+speed_classification:
+        num_classes: 7  
+        class_names: ["1", "5", "10", "15", "20", "30", ">30"]
+        train_index_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_speed_classification/train_index.txt 
+        val_index_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_speed_classification/val_index.txt  
+        test_index_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_speed_classification/test_index.txt 
+        train_class_count_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_speed_classification/train_class_count.txt
+terrain_classification:
+        num_classes: 3  
+        class_names: ["desert", "arctic", "normal"]
+        train_index_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_terrain_classification/train_index.txt 
+        val_index_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_terrain_classification/val_index.txt  
+        test_index_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_terrain_classification/test_index.txt 
+        train_class_count_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_terrain_classification/train_class_count.txt
+
+cross_entropy:
+        name: "cross_entropy"
+
+repetition: 3
+
+batch_size: 32
+num_workers: 4
+use_balanced_sampling: True
+
+base_experiment_dir: /home/misra8/baseline/src2/experiments
+
+# Segments
+num_segments: 7
+
+# Locations 
+num_locaiton: 1
+location_names: ["shake"]
+
+# Modality names
+num_sensors: 2
+modality_names: ["seismic", "audio"]
+
+# Location modalities
+loc_modalities: 
+        shake: ["seismic", "audio"]
+loc_mod_in_freq_channels:
+        shake:
+                audio: 6
+                seismic: 4
+loc_mod_in_time_channels:
+        shake:
+                audio: 3
+                seismic: 2
+loc_mod_spectrum_len:
+        shake:
+                audio: 256
+                seismic: 256
+
+# For sequence-based contrastive learning 
+seq_len: 4
+
+# =============================================================================
+# Model Zoo: Reusable Model Definitions
+# =============================================================================
+# Define models once, reference them by name in distillation experiments.
+# Each model can be a teacher or student depending on how it's used.
+
+models:
+        # Teacher: Audio-only ResNet18 (standard floating point, no early exits)
+        # This should be a pre-trained model that we load from checkpoint
+        teacher_audio_resnet18:
+                model_source: "create_single_modal_model"
+                model_type: "resnet"
+                active_modality: "audio"
+                layers: [2, 2, 2, 2]  # Standard ResNet18
+                filter_sizes: [64, 128, 256, 512]  # Standard ResNet18 filters
+                stem_kernel: 7
+                stem_stride: 2
+                use_maxpool: true
+                dropout_ratio: 0.2
+                fc_dim: 512
+                early_exits: []  # No early exits for teacher
+        
+        # Student 1: Audio-only ResNet (~757 KB)
+        student_audio_resnet:
+                model_source: "create_single_modal_model"
+                model_type: "resnet"
+                active_modality: "audio"
+                layers: [1, 1, 1, 1]
+                filter_sizes: [16, 32, 48, 96]
+                stem_kernel: 3
+                stem_stride: 1
+                use_maxpool: false
+                dropout_ratio: 0.1
+                fc_dim: 64
+                early_exits: [1, 2]
+        
+        # Student 2: Audio-only ConvOnly (~730 KB)
+        student_audio_convonly:
+                model_source: "create_single_modal_model"
+                model_type: "convonly"
+                active_modality: "audio"
+                num_blocks: [2, 2, 2, 2]
+                filter_sizes: [16, 32, 48, 96]
+                kernel_sizes: [3, 3, 3, 3]
+                strides: [1, 2, 2, 2]
+                stem_kernel: 3
+                stem_stride: 1
+                dropout_ratio: 0.1
+                fc_dim: 64
+                early_exits: [1, 2]
+                early_exit_type: "gap_linear"
+
+
+# =============================================================================
+# Distillation Experiments
+# =============================================================================
+# Orchestrate multi-stage distillation pipelines.
+# 
+# Structure:
+#   1. Define reusable models in the "models" section above
+#   2. Create experiment configs here that reference those models
+#   3. Each experiment defines a cascade: model[0] -> model[1] -> model[2] -> ...
+#   4. Training stages: stage[i] distills model[i+1] from model[i]
+#
+# Example: Add a new experiment
+#
+#   distillation:
+#       enabled: true
+#       
+#       my_seismic_experiment:
+#           models: ["teacher_resnet18", "student_seismic_resnet", "student_seismic_tiny"]
+#           stages:
+#               - name: "stage1"
+#                 teacher_idx: 0
+#                 student_idx: 1
+#                 epochs: 50
+#                 loss_name: "kd_loss"
+#                 temperature: 4.0
+#                 alpha: 0.5
+#               - name: "stage2"
+#                 teacher_idx: 1
+#                 student_idx: 2
+#                 epochs: 100
+#                 loss_name: "kd_loss"
+#                 temperature: 3.0
+#                 alpha: 0.7
+#           optimizer: {...}
+#           lr_scheduler: {...}
+
+distillation:
+        enabled: true
+
+        only_audio_resnet18:
+                models: ["student_audio_resnet"]
+                stages:
+                        - train_type: "vanilla_supervised"
+                          teacher_idx: 0
+                          epochs: 50
+                          loss_name: "cross_entropy"
+                          # No early exit flag means they will have equal weights for all exits
+
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0001
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 0
+                        start_epoch: 0
+                        decay_epochs: 2
+                        decay_rate: 0.2
+
+        only_audio_convonly_early_exit:
+                models: ["student_audio_convonly"]  # Has early_exits: [1, 2] defined in model config
+                stages:
+                        - train_type: "vanilla_supervised"
+                          teacher_idx: 0
+                          epochs: 2  # Short test
+                          loss_name: "cross_entropy"
+                          exit_weights: [0.3, 0.3, 0.4]  # Optional: weights for exit1, exit2, final
+
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0001
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 0
+                        start_epoch: 0
+                        decay_epochs: 2
+                        decay_rate: 0.2
+
+                          
+        
+        # Experiment: Train student model with early exits
+        only_audio_resnet_early_exit:
+                models: ["student_audio_resnet"]  # Has early_exits: [1, 2] defined in model config
+                stages:
+                        - train_type: "vanilla_supervised"
+                          teacher_idx: 0
+                          epochs: 2  # Short test
+                          loss_name: "cross_entropy"
+                          exit_weights: [0.3, 0.3, 0.4]  # Optional: weights for exit1, exit2, final
+
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0001
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 0
+                        start_epoch: 0
+                        decay_epochs: 2
+                        decay_rate: 0.2
+        
+        # Experiment: Audio cascade (Audio ResNet18 -> student ResNet -> student ConvOnly)
+        audio_cascade_2stage:
+                models: ["teacher_audio_resnet18", "student_audio_resnet", "student_audio_convonly"]
+                
+                # Training stages (one per student model)
+                # Stage 0: teacher_resnet18 -> student_audio_resnet
+                # Stage 1: student_audio_resnet -> student_audio_convonly
+                stages:
+                        - name: "resnet18_to_audio_resnet"
+                          teacher_idx: 0
+                          student_idx: 1
+                          epochs: 50
+                          loss_name: "kd_loss"
+                          temperature: 4.0
+                          alpha: 0.5  # weight for KD loss vs CE loss
+                          save_checkpoint: true
+                          
+                        - name: "audio_resnet_to_convonly"
+                          teacher_idx: 1
+                          student_idx: 2
+                          epochs: 100
+                          loss_name: "kd_loss"
+                          temperature: 4.0
+                          alpha: 0.5
+                          save_checkpoint: true
+                
+                # Optimizer config for all student training stages
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.001
+                        warmup_lr: 0.00001
+                        min_lr: 0.00001
+                        clip_grad: 5.0
+                        weight_decay: 0.01
+                
+                # LR scheduler config for all stages
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 5
+
+
+# =============================================================================
+# Original Teacher Model Configs
+# =============================================================================
+ResNet:
+        # Architecture settings
+        block_type: "basic"  # "basic" for ResNet18/34, "bottleneck" for ResNet50+
+        layers: [2, 2, 2, 2]  # ResNet18
+        # layers: [3, 4, 6, 3]  # ResNet34
+        # layers: [3, 4, 6, 3]  # ResNet50 (with block_type: "bottleneck")
+        dropout_ratio: 0.2
+        fc_dim: 256
+
+        fixed_augmenters:
+                time_augmenters: ["no"]
+                freq_augmenters: ["no"]
+
+        
+        # Quantization config
+
+        
+
+
+                
+
+# DeepSense config
+DeepSense:
+        dropout_ratio: 0.2
+        # single interval + location + modality
+        loc_mod_in_conv_stride:
+                audio: [1, 4]
+                seismic: [1, 4]
+        loc_mod_conv_lens: 
+                audio: [[1, 4], [1, 4], [1, 4]]
+                seismic: [[1, 4], [1, 4], [1, 4]]
+        loc_mod_out_channels: 128
+        loc_mod_conv_inter_layers: 4
+        # single interval + location
+        loc_conv_lens: [[1, 4], [1, 4], [1, 4]]
+        loc_out_channels: 128
+        loc_conv_inter_layers: 3
+        # recurrent layer
+        recurrent_dim: 128
+        recurrent_layers: 2
+        # FC layer
+        fc_dim: 256
+        pretrained_head: "linear"
+        # Optimizer config
+        optimizer:
+                name: "AdamW"
+                start_lr: 0.0001
+                warmup_lr: 0.000001
+                min_lr: 0.000001
+                clip_grad: 5.0
+                weight_decay: 0.05
+        # LR scheduler
+        lr_scheduler:
+                name: "cosine"
+                warmup_prefix: True
+                warmup_epochs: 0
+                train_epochs: 1000
+                start_epoch: 0
+                decay_epochs: 200
+                decay_rate: 0.2
+        # Data Augmenters:
+        random_augmenters:
+                time_augmenters: ["permutation", "negation", "time_warp", "horizontal_flip", "mag_warp", "scaling", "jitter", "channel_shuffle"]
+                freq_augmenters: ["phase_shift"]
+        fixed_augmenters:
+                time_augmenters: ["channel_shuffle", "mixup"]
+                freq_augmenters: ["phase_shift"]
+
+TransformerV4:
+        dropout_ratio: 0.2
+        drop_path_rate: 0.1
+        attn_drop_rate: 0.2
+        # loc mod freq feature
+        in_stride:
+                audio: 1
+                seismic: 1
+        # single modality
+        time_freq_out_channels: 64
+        time_freq_head_num: 4
+        time_freq_block_num: 
+                audio: [2, 2, 4]
+                seismic: [2, 2, 4]
+        # modality fusion
+        mod_out_channels: 256
+        mod_head_num: 4
+        mod_block_num: 2
+        # location fusion
+        loc_out_channels: 256 # loc_out_channels == mod_out_channels
+        loc_head_num: 4
+        loc_block_num: 2
+        # SwinTransformer configs
+        window_size: 
+                audio: [2, 4] 
+                seismic: [2, 4] 
+        mlp_ratio: 4.
+        qkv_bias: True
+        APE: False
+        patch_norm: True
+        patch_size:
+                freq:
+                        audio: [1, 8]
+                        seismic: [1, 8]
+        # FC layer
+        fc_dim: 512
+        pretrained_head: "linear"
+        # Optimizer config
+        optimizer:
+                name: "AdamW"
+                start_lr: 0.00001
+                warmup_lr: 0.000001
+                min_lr: 0.0000001
+                clip_grad: 5.0
+                weight_decay: 0.05
+        # LR scheduler
+        lr_scheduler:
+                name: "cosine"
+                warmup_prefix: True
+                warmup_epochs: 0
+                train_epochs: 1000
+                start_epoch: 0
+                decay_epochs: 200
+                decay_rate: 0.2
+        # Data Augmenters:
+        random_augmenters:
+                time_augmenters: ["permutation", "negation", "time_warp", "horizontal_flip", "mag_warp", "scaling", "jitter", "channel_shuffle"]
+                freq_augmenters: ["phase_shift"]
+        fixed_augmenters:
+                time_augmenters: ["channel_shuffle", "mixup"]
+                freq_augmenters: ["phase_shift"]
+
+# ------------------------------------------- Data Augmenter Configs ------------------------------------------
+# Mixup config
+mixup:
+        mixup_alpha: 1.0
+        cutmix_alpha: 1.0
+        cutmix_minmax: null
+        prob: 0.5
+        switch_prob: 1 # prob of switch to cutmix
+        mode: 'random_batch'
+        label_smoothing: 0
+
+jitter:
+        std_in_percent: 3
+        prob: 0.5
+
+rotation:
+        angles: [90, 180, 270]
+
+permutation:
+        prob: 0.5
+
+scaling:
+        prob: 0.5
+        std: 0.3
+
+time_warp:
+        prob: 0.5
+        magnitude: 0.2
+        order: 6
+
+mag_warp:
+        prob: 0.5
+        magnitude: 0.2
+        order: 4
+
+negation:
+        prob: 0.5
+
+channel_shuffle:
+        prob: 0.5
+
+freq_mask:
+        prob: 0.5 
+        mask_ratio: 0.3
+
+time_mask:
+        prob: 0.5
+        mask_ratio: 0.3
+
+phase_shift:
+        prob: 0.5 
+
+horizontal_flip:
+        prob: 0.5

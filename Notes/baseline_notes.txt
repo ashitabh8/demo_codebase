@@ -1,0 +1,2 @@
+Adabits
+1- Uses SAT weight scaling, Joint Quantization, and Switchable clipping

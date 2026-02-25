@@ -1,0 +1,539 @@
+# data paths  
+pretrain_index_file: /home/tkimura4/data/datasets/MOD/Parkland/time_data_partition/pretrain_index.txt
+
+vehicle_classification:
+        num_classes: 7  # number of classes
+        class_names: ["Polaris", "Warhog", "Truck", "motor", "tesla", "mustang", "walk"]
+        train_index_file: /home/tkimura4/data/datasets/MOD/Parkland/time_data_partition/train_index.txt
+        val_index_file: /home/tkimura4/data/datasets/MOD/Parkland/time_data_partition/val_index.txt  
+        test_index_file: /home/tkimura4/data/datasets/MOD/Parkland/time_data_partition/test_index.txt 
+
+base_experiment_dir: /home/arhamj3/madhav_sensing-nn/src2/experiments
+
+cross_entropy:
+        name: "cross_entropy"
+
+label_smoothing_ce:
+        name: "label_smoothing_ce"
+        label_smoothing: 0.1
+
+kurtosis:
+        name: "kurtosis"
+        kurtosis_weight: 0.1
+        kurtosis_target: 1.8
+        kurtosis_eps: 1e-8
+
+importance_vector_loss:
+        name: "importance_vector_loss"
+        lambda_variance: 0.1
+        variance_metric: "loss" # Not used anymore
+        target_avg_bitwidth: 6.0
+        budget_coeff: 0.01
+
+loss_name: "cross_entropy"
+
+repetition: 3
+
+batch_size: 128
+num_workers: 4
+use_balanced_sampling: True
+
+# Normalization
+# Options: "standard", "minmax", "maxabs", "none"
+# for DynamicQuantization only use "minmax" because it supports unsigned quantization, 
+# so negative values are not supported
+normalization:
+        # method: "standard"  # Use StandardScaler (mean=0, std=1)
+        method: "minmax"  # Use MinMaxScaler (scale to range)
+        minmax_range: [0, 1]  # Only used when method is "minmax"
+        # method: "maxabs"  # Use MaxAbsScaler (scale to [-1, 1] by max absolute value)
+        # method: "none"  # No normalization
+
+# Segments
+num_segments: 10
+
+# Locations 
+num_locaiton: 1
+location_names: ["shake"]
+
+# Modality names
+num_sensors: 2
+modality_names: ["seismic", "audio"]
+
+# Location modalities
+loc_modalities: 
+        shake: ["seismic", "audio"]
+loc_mod_in_freq_channels:
+        shake:
+                audio: 2
+                seismic: 2
+                acc: 6
+loc_mod_in_time_channels:
+        shake:
+                audio: 1
+                seismic: 1
+                acc: 3
+loc_mod_spectrum_len:
+        shake:
+                audio: 1600
+                seismic: 20
+                acc: 20
+
+# For sequence-based contrastive learning 
+seq_len: 4
+
+
+quantization:
+        enable: True
+
+        # Conv: "QuanConv" # QuanConv (for Joint Quantization, and Single Precision Training), QuanConvImportance (for importance vector quantization)
+        importance_vector_comprehensive_validation:
+                name: "importance_vector_comprehensive_validation"
+                number_of_configs: 8
+                bitwidth_options: [4,8]
+                bin_tolerance: 0.5
+        random_bitwidths:
+                bitwidth_options: [2, 4, 8]
+                name: "random_bitwidths"
+                number_of_configs: 8
+                bin_tolerance: 0.5
+        joint_quantization:
+                joint_quantization_batch_size: 2
+                every_epoch_new_bitwidth_config: True
+        vanilla_single_precision_training:
+                bitwidth_options: [8]
+        any_precision:
+                Conv: "QuanConv"
+                loss_name: "cross_entropy"
+                bitwidth_options: [2, 4, 8]
+                weight_quantization: "dorefa"
+                activation_quantization: "pact"
+                validation_function: "random_bitwidths"
+                training_method: "joint_quantization"
+                switchable_clipping: False
+                sat_weight_normalization: False
+                bn_type: "switchable"
+        robustquant:
+                Conv: "QuanConv"
+                bitwidth_options: [2,4,8]
+                weight_quantization: "dorefa"
+                activation_quantization: "pact"
+                validation_function: "random_bitwidths"
+                training_method: "joint_quantization"
+                switchable_clipping: True
+                sat_weight_normalization: False
+                loss_name: "kurtosis"
+                kurtosis_regularization: True
+                kurtosis_target: 1.8
+                kurtosis_weight: 0.1
+        adabits:
+                Conv: "QuanConv"
+                loss_name: "cross_entropy" # cross_entropy, label_smoothing_ce 
+                bitwidth_options: [2, 4, 8]
+                default_bitwidth: 8
+                bitwidht_allocation: "random"
+                weight_quantization: "dorefa"
+                activation_quantization: "pact"
+                validation_function: "random_bitwidths" # simple_validation, random_bitwidths
+                training_method: "joint_quantization" # joint_quantization, vanilla_single_precision_training
+                switchable_clipping: True
+                sat_weight_normalization: True
+        bitmixer:
+                Conv: "QuanConv"
+                loss_name: "cross_entropy"
+                bitwidth_options: [2, 4, 8]
+                weight_quantization: "dorefa"
+                activation_quantization: "pact"
+                validation_function: "random_bitwidths"
+                training_method: "bitmixer"
+                switchable_clipping: False
+                sat_weight_normalization: False
+                bn_type: "transitional"
+                bitmixer:
+                        stage1_epochs: 5
+                        stage2_epochs: 5
+                        sigma_start: 1.0
+                        sigma_end: 0.25
+        # pact:
+        #         Conv: "QuanConv"
+        #         loss_name: "cross_entropy"
+        #         bitwidth_options: [4, 8]
+        #         default_bitwidth: 8
+        #         bitwidht_allocation: "random"
+        #         weight_quantization: "dorefa"
+        #         activation_quantization: "pact"
+        #         act_quant: "pact"
+        #         validation_function: "random_bitwidths"
+        #         training_method: "joint_quantization"
+        #         switchable_clipping: True
+        #         sat_weight_normalization: False
+        # lsq:
+        #         Conv: "QuanConv"
+        #         loss_name: "cross_entropy"
+        #         bitwidth_options: [4, 8]
+        #         default_bitwidth: 8
+        #         bitwidht_allocation: "random"
+        #         weight_quantization: "lsq"
+        #         activation_quantization: "lsq"
+        #         validation_function: "random_bitwidths"
+        #         training_method: "joint_quantization"
+        #         switchable_clipping: False  # Not used for LSQ
+        #         sat_weight_normalization: False
+        # lsqplus:
+        #         Conv: "QuanConv"
+        #         loss_name: "cross_entropy"
+        #         bitwidth_options: [4, 8]
+        #         default_bitwidth: 8
+        #         bitwidht_allocation: "random"
+        #         weight_quantization: "lsqplus"
+        #         activation_quantization: "lsqplus"
+        #         validation_function: "random_bitwidths"
+        #         training_method: "joint_quantization"
+        #         switchable_clipping: False  # Not used for LSQPlus
+        #         sat_weight_normalization: False
+        importance_vector:
+                Conv: "QuanConvImportance"
+                loss_name: "importance_vector_loss" # cross_entropy, label_smoothing_ce, importance_vector_loss
+                bitwidth_options: [2, 4, 8]
+                weight_quantization: "dorefa"
+                activation_quantization: "dorefa"
+                validation_function: "importance_vector_comprehensive_validation"
+                training_method: "joint_quantization_with_importance_vector"
+                number_of_configs: 2
+                switchable_clipping: True
+                sat_weight_normalization: False
+                
+                # Importance vector specific params
+                importance_vector:
+                        sampling_strategy: "soft_gumbel_softmax" # 'best_bitwidth', 'soft_gumbel_softmax', 'uniform_sampling'
+                        
+                
+                # Temperature scheduler for Gumbel-Softmax
+                # Used by: models/Temperature_Scheduler.py
+                # Similar to LR scheduler, call temp_scheduler.step() at end of each epoch
+                temp_scheduler:
+                        # Scheduler type: 'cosine', 'exponential', 'linear', 'step', 'cyclic', 'constant'
+                        name: "cosine"
+                        temp_start: 1.0     # High temperature = more exploration
+                        temp_min: 0.1       # Low temperature = more exploitation
+                        # num_epochs is taken from lr_scheduler.train_epochs automatically
+                        
+                        # Additional params for specific schedulers:
+                        # For 'exponential': decay_rate (optional, computed if not provided)
+                        # For 'step': milestones: [30, 60, 80], gamma: 0.5
+                        # For 'cyclic': cycle_length: 20
+                
+                # Visualization frequency
+                visualize_importance_every: 2  # epochs
+
+                
+ResNet:
+        # Architecture settings
+        model_name: "resnet18"  # Options: resnet18, resnet34, resnet50, resnet101, resnet152
+        block_type: "basic"  # "basic" for ResNet18/34, "bottleneck" for ResNet50+
+        layers: [2, 2, 2, 2]  # ResNet18
+        # layers: [3, 4, 6, 3]  # ResNet34
+        # layers: [3, 4, 6, 3]  # ResNet50 (with block_type: "bottleneck")
+        dropout_ratio: 0.2
+        fc_dim: 256
+
+  # Optimizer config
+        optimizer:
+                name: "AdamW"
+                start_lr: 0.0001
+                warmup_lr: 0.000001
+                min_lr: 0.000001
+                clip_grad: 5.0
+                weight_decay: 0.05
+
+  # LR scheduler
+        lr_scheduler:
+                name: "cosine"
+                warmup_prefix: True
+                warmup_epochs: 0
+                train_epochs: 50
+                start_epoch: 0
+                decay_epochs: 2
+                decay_rate: 0.2
+
+        fixed_augmenters:
+                time_augmenters: ["audio_noise"]
+                freq_augmenters: ["no"]
+
+MobileNetV2:
+        # Architecture settings
+        width_mult: 1.0
+        dropout_ratio: 0.2
+        fc_dim: 256
+
+  # Optimizer config
+        optimizer:
+                name: "AdamW"
+                start_lr: 0.0001
+                warmup_lr: 0.000001
+                min_lr: 0.000001
+                clip_grad: 5.0
+                weight_decay: 0.05
+
+  # LR scheduler
+        lr_scheduler:
+                name: "cosine"
+                warmup_prefix: True
+                warmup_epochs: 0
+                train_epochs: 50
+                start_epoch: 0
+                decay_epochs: 2
+                decay_rate: 0.2
+
+        fixed_augmenters:
+                time_augmenters: ["no"]
+                freq_augmenters: ["no"]
+
+# DeepSense config
+DeepSense:
+        dropout_ratio: 0.2 
+        # single interval + location + modality
+        loc_mod_in_conv_stride:
+                audio: [1, 80]
+                seismic: [1, 1]
+        loc_mod_conv_lens: 
+                audio: [[1, 80], [1, 5], [1, 5]]
+                seismic: [[1, 3], [1, 3], [1, 3]]
+        loc_mod_out_channels: 128
+        loc_mod_conv_inter_layers: 4
+        # single interval + location
+        loc_conv_lens: [[1, 4], [1, 4], [1, 4]]
+        loc_out_channels: 128
+        loc_conv_inter_layers: 3
+        # recurrent layer
+        recurrent_dim: 256
+        recurrent_layers: 2
+        # FC layer
+        fc_dim: 512
+        pretrained_head: "linear"
+        # Optimizer config
+        optimizer:
+                name: "AdamW"
+                start_lr: 0.0001
+                warmup_lr: 0.000001
+                min_lr: 0.0000001
+                clip_grad: 5.0
+                weight_decay: 0.05
+        # LR scheduler
+        lr_scheduler:
+                name: "step"
+                warmup_prefix: True
+                warmup_epochs: 0
+                train_epochs: 500
+                start_epoch: 0
+                decay_epochs: 300
+                decay_rate: 0.2
+        # Augmenters
+        random_augmenters:
+                time_augmenters: ["no"]
+                freq_augmenters: ["phase_shift"]
+        fixed_augmenters:
+                time_augmenters: ["mixup"]
+                freq_augmenters: ["no"]
+
+TransformerV4:
+        dropout_ratio: 0.2
+        drop_path_rate: 0.1
+        attn_drop_rate: 0.2
+        # loc mod freq feature
+        in_stride:
+                audio: 1
+                seismic: 1
+        # single modality
+        time_freq_out_channels: 64
+        time_freq_head_num: 4
+        time_freq_block_num: 
+                audio: [2, 2, 4]
+                seismic: [2, 2, 4]
+        # modality fusion
+        mod_out_channels: 256
+        mod_head_num: 4
+        mod_block_num: 2
+        # location fusion
+        loc_out_channels: 256 # loc_out_channels == mod_out_channels
+        loc_head_num: 4
+        loc_block_num: 2
+        # SwinTransformer configs
+        window_size: 
+                audio: [3, 3] 
+                seismic: [3, 3] 
+        mlp_ratio: 4.
+        qkv_bias: True
+        APE: False
+        patch_norm: True
+        patch_size:
+                freq:
+                        audio: [1, 40]
+                        seismic: [1, 1]
+        # FC layer
+        fc_dim: 512
+        pretrained_head: "linear"
+        # Optimizer config
+        optimizer:
+                name: "AdamW"
+                start_lr: 0.0001
+                warmup_lr: 0.000001
+                min_lr: 0.0000001
+                clip_grad: 5.0
+                weight_decay: 0.05
+        # LR scheduler
+        lr_scheduler:
+                name: "cosine"
+                warmup_prefix: True
+                warmup_epochs: 0
+                train_epochs: 500
+                start_epoch: 0
+                decay_epochs: 100
+                decay_rate: 0.2
+        # Data Augmenters:
+        random_augmenters:
+                time_augmenters: ["no"]
+                freq_augmenters: ["no"]
+        fixed_augmenters:
+                time_augmenters: ["no"]
+                freq_augmenters: ["phase_shift"]
+
+CifarResNet:
+        # Architecture settings
+        model_name: "resnet20"  # Options: resnet20, resnet32, resnet44, resnet56, resnet110
+        initial_channels: 16    # Default is 16 (CIFAR standard), use 32 for wider networks
+        dropout_ratio: 0.2
+        fc_dim: 256
+
+        # Optimizer config
+        optimizer:
+                name: "AdamW"
+                start_lr: 0.0001
+                warmup_lr: 0.000001
+                min_lr: 0.000001
+                clip_grad: 5.0
+                weight_decay: 0.05
+
+        # LR scheduler
+        lr_scheduler:
+                name: "cosine"
+                warmup_prefix: True
+                warmup_epochs: 0
+                train_epochs: 50
+                start_epoch: 0
+                decay_epochs: 2
+                decay_rate: 0.2
+
+        fixed_augmenters:
+                time_augmenters: ["no"]
+                freq_augmenters: ["no"]
+
+# ------------------------------------------- Data Augmenter Configs ------------------------------------------
+# Mixup config
+mixup:
+        mixup_alpha: 1.0
+        cutmix_alpha: 1.0
+        cutmix_minmax: null
+        prob: 1.0
+        switch_prob: 0.75
+        mode: 'random_batch'
+        label_smoothing: 0
+        num_classes: 7
+
+jitter:
+        std_in_percent: 0.2
+        prob: 0.5
+
+rotation:
+        angles: [90, 180, 270]
+
+permutation:
+        prob: 0.5
+
+scaling:
+        prob: 0.5
+        std: 0.2
+
+time_warp:
+        prob: 0.5
+        magnitude: 0.2
+        order: 6
+
+mag_warp:
+        prob: 0.5
+        magnitude: 0.05
+        order: 4
+
+negation:
+        prob: 0.5
+
+channel_shuffle:
+        prob: 0.5
+
+freq_mask:
+        prob: 0.5 
+        mask_ratio: 0.3
+
+time_mask:
+        prob: 0.5
+        mask_ratio: 0.3
+
+phase_shift:
+        prob: 0.5 
+
+horizontal_flip:
+        prob: 0.5
+
+# Legacy band_limited_noise config (use audio_noise_augmentation instead)
+band_limited_noise:
+        prob: 0.5
+        noise_std: 0.5
+        noise_range: "full_spectrum"
+        target_modality: "audio"
+
+# ============================================================================
+# Audio Noise Augmentation Configuration (Unified Soft + Hard Noise)
+# ============================================================================
+audio_noise_augmentation:
+        target_modality: "audio"  # Only apply to audio
+        
+        # ---------------------------------------------------------------------
+        # Soft Noise (Band-Limited Gaussian) - "Easy Mode"
+        # ---------------------------------------------------------------------
+        soft_noise:
+                enabled: false
+                prob: 0.5
+                mode: "some_overlap"  # Options: "no_overlap", "some_overlap", "full_spectrum"
+                # Single value OR list for random selection per batch during training
+                noise_std: [0.2, 0.3, 0.4, 0.5]  # Randomly picks one per batch
+                modes:
+                        no_overlap:
+                                freq_range: [500, 800]
+                        some_overlap:
+                                freq_range: [200, 500]
+                        full_spectrum:
+                                freq_range: [0, 800]
+        
+        # ---------------------------------------------------------------------
+        # Hard Noise (Environmental) - Wind/Rain
+        # ---------------------------------------------------------------------
+        hard_noise:
+                enabled: false
+                prob: 0.5
+                mode: "rain"  # Options: "wind", "rain"
+                
+                # Wind noise parameters
+                wind:
+                        # Single value OR list for random selection per batch
+                        intensity: [0.2, 0.3, 0.4, 0.5]  # Randomly picks one per batch
+                        low_freq_weight: 1.5     # Low frequency emphasis (0.5-5.0)
+                        high_freq_cutoff: 0.25   # Rolloff point (0.0-1.0 of Nyquist)
+                        turbulence_factor: 0.4   # Wind gust variation (0.0-1.0)
+                
+                # Rain noise parameters
+                rain:
+                        # Single value OR list for random selection per batch
+                        intensity: [0.2, 0.3, 0.4, 0.5]  # Randomly picks one per batch
+                        droplet_rate: 0.3        # Temporal sparsity (0.0-0.8)
+                        high_freq_emphasis: 2.0  # High frequency boost (1.0-3.0)
+                        splash_sharpness: 0.6    # Transient sharpness (0.0-0.9)

@@ -1,0 +1,12 @@
+
+1) Need to add checks for bitwidth options to be consistent in config
+
+
+2) Update test script to work with updated changes
+3) Make PACT etc work test the helper functions for PACT LSQ etc. - DoRefa is done and tested
+4) Work on the integration with other datasets - right now focussed on Parkland
+
+5) update to soft for gumbal softmax if necessary for now we can try with hard setting
+
+
+6) Clean up the tensorboard and logging a bit remove the not used stuff
