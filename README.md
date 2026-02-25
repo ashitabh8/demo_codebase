@@ -1,4 +1,4 @@
-# Model Distillation Training Pipeline
+# Model Distillation Training Pipeline - Use this for Demo Purposes
 
 A flexible framework for training compressed neural networks using distillation and early exit techniques for time-series sensor data.
 
