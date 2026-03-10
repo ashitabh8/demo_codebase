@@ -10,8 +10,7 @@ sys.path.insert(0, str(src2_path))
 
 from models.ResNet import SingleModalResNet
 from models.ConvOnlyModels import SingleModalConvOnly
-
-
+from models.ResNetSimple import ResNetSimpleBackbone, SingleModalSimpleResNet, build_simple_resnet_from_config
 
 
 
@@ -148,6 +147,15 @@ def create_single_modal_model(config, model_config_key):
             dropout_ratio=dropout_ratio,
             early_exit_layers=early_exit_layers,
             early_exit_type=early_exit_type,
+        )
+
+    elif model_type == "resnet_simple":
+        logging.info("  Using ResNetSimpleBackbone (no early exits)")
+        backbone, location_name, active_modality = build_simple_resnet_from_config(config, model_config_key)
+        model = SingleModalSimpleResNet(
+            location_name=location_name,
+            modality_name=active_modality,
+            backbone=backbone,
         )
     
     else:

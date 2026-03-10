@@ -1,14 +1,14 @@
 # data paths  
-pretrain_index_file: /home/tkimura4/data/datasets/MOD/Parkland/time_data_partition/pretrain_index.txt
+pretrain_index_file: /data/kara4/Parkland/time_data_partition/pretrain_index.txt
 
 vehicle_classification:
         num_classes: 7  # number of classes
         class_names: ["Polaris", "Warhog", "Truck", "motor", "tesla", "mustang", "walk"]
-        train_index_file: /home/tkimura4/data/datasets/MOD/Parkland/time_data_partition/train_index.txt
-        val_index_file: /home/tkimura4/data/datasets/MOD/Parkland/time_data_partition/val_index.txt  
-        test_index_file: /home/tkimura4/data/datasets/MOD/Parkland/time_data_partition/test_index.txt 
+        train_index_file: /data/kara4/Parkland/time_data_partition/train_index.txt
+        val_index_file: /data/kara4/Parkland/time_data_partition/val_index.txt  
+        test_index_file: /data/kara4/Parkland/time_data_partition/test_index.txt 
 
-base_experiment_dir: /home/arhamj3/madhav_sensing-nn/src2/experiments
+base_experiment_dir: /home/madhav5/demo_codebase/src2/experiments
 
 cross_entropy:
         name: "cross_entropy"
@@ -82,149 +82,320 @@ loc_mod_spectrum_len:
 # For sequence-based contrastive learning 
 seq_len: 4
 
+models:
+        # Teacher: Audio-only ResNet18 (standard floating point, no early exits)
+        # This should be a pre-trained model that we load from checkpoint
+        teacher_audio_resnet18:
+                model_source: "create_single_modal_model"
+                model_type: "resnet_simple"
+                active_modality: "audio"
+                layers: [2, 2, 2, 2]  # Standard ResNet18
+                filter_sizes: [64, 128, 256, 512]  # Standard ResNet18 filters
+                stem_kernel: 7
+                stem_stride: 2
+                use_maxpool: true
+                dropout_ratio: 0.2
+                fc_dim: 512
+                early_exits: []  # No early exits for teacher
+                weight_only_qat: false
+                weight_only_bits: 2
+        
+        # Student 1: Audio-only ResNet (~757 KB)
+        student_audio_resnet:
+                model_source: "create_single_modal_model"
+                model_type: "resnet_simple"
+                active_modality: "audio"
+                layers: [2, 2, 2, 2, 2, 2, 2]
+                filter_sizes: [16, 32, 48, 96, 48, 32, 16]
+                stem_kernel: 3
+                stem_stride: 1
+                use_maxpool: false
+                dropout_ratio: 0.1
+                fc_dim: 64
+                early_exits: []
+                weight_only_qat: false
+                weight_only_bits: 2
+        
+        # Student 2: Audio-only ConvOnly (~730 KB)
+        student_audio_convonly:
+                model_source: "create_single_modal_model"
+                model_type: "convonly"
+                active_modality: "audio"
+                num_blocks: [2, 2, 2, 2]
+                filter_sizes: [16, 32, 48, 96]
+                kernel_sizes: [3, 3, 3, 3]
+                strides: [1, 2, 2, 2]
+                stem_kernel: 3
+                stem_stride: 1
+                dropout_ratio: 0.1
+                fc_dim: 64
+                early_exits: [1, 2]
+                early_exit_type: "gap_linear"
 
-quantization:
-        enable: True
+distillation:
+        enabled: true
 
-        # Conv: "QuanConv" # QuanConv (for Joint Quantization, and Single Precision Training), QuanConvImportance (for importance vector quantization)
-        importance_vector_comprehensive_validation:
-                name: "importance_vector_comprehensive_validation"
-                number_of_configs: 8
-                bitwidth_options: [4,8]
-                bin_tolerance: 0.5
-        random_bitwidths:
-                bitwidth_options: [2, 4, 8]
-                name: "random_bitwidths"
-                number_of_configs: 8
-                bin_tolerance: 0.5
-        joint_quantization:
-                joint_quantization_batch_size: 2
-                every_epoch_new_bitwidth_config: True
-        vanilla_single_precision_training:
-                bitwidth_options: [8]
-        any_precision:
-                Conv: "QuanConv"
-                loss_name: "cross_entropy"
-                bitwidth_options: [2, 4, 8]
-                weight_quantization: "dorefa"
-                activation_quantization: "pact"
-                validation_function: "random_bitwidths"
-                training_method: "joint_quantization"
-                switchable_clipping: False
-                sat_weight_normalization: False
-                bn_type: "switchable"
-        robustquant:
-                Conv: "QuanConv"
-                bitwidth_options: [2,4,8]
-                weight_quantization: "dorefa"
-                activation_quantization: "pact"
-                validation_function: "random_bitwidths"
-                training_method: "joint_quantization"
-                switchable_clipping: True
-                sat_weight_normalization: False
-                loss_name: "kurtosis"
-                kurtosis_regularization: True
-                kurtosis_target: 1.8
-                kurtosis_weight: 0.1
-        adabits:
-                Conv: "QuanConv"
-                loss_name: "cross_entropy" # cross_entropy, label_smoothing_ce 
-                bitwidth_options: [2, 4, 8]
-                default_bitwidth: 8
-                bitwidht_allocation: "random"
-                weight_quantization: "dorefa"
-                activation_quantization: "pact"
-                validation_function: "random_bitwidths" # simple_validation, random_bitwidths
-                training_method: "joint_quantization" # joint_quantization, vanilla_single_precision_training
-                switchable_clipping: True
-                sat_weight_normalization: True
-        bitmixer:
-                Conv: "QuanConv"
-                loss_name: "cross_entropy"
-                bitwidth_options: [2, 4, 8]
-                weight_quantization: "dorefa"
-                activation_quantization: "pact"
-                validation_function: "random_bitwidths"
-                training_method: "bitmixer"
-                switchable_clipping: False
-                sat_weight_normalization: False
-                bn_type: "transitional"
-                bitmixer:
-                        stage1_epochs: 5
-                        stage2_epochs: 5
-                        sigma_start: 1.0
-                        sigma_end: 0.25
-        # pact:
-        #         Conv: "QuanConv"
-        #         loss_name: "cross_entropy"
-        #         bitwidth_options: [4, 8]
-        #         default_bitwidth: 8
-        #         bitwidht_allocation: "random"
-        #         weight_quantization: "dorefa"
-        #         activation_quantization: "pact"
-        #         act_quant: "pact"
-        #         validation_function: "random_bitwidths"
-        #         training_method: "joint_quantization"
-        #         switchable_clipping: True
-        #         sat_weight_normalization: False
-        # lsq:
-        #         Conv: "QuanConv"
-        #         loss_name: "cross_entropy"
-        #         bitwidth_options: [4, 8]
-        #         default_bitwidth: 8
-        #         bitwidht_allocation: "random"
-        #         weight_quantization: "lsq"
-        #         activation_quantization: "lsq"
-        #         validation_function: "random_bitwidths"
-        #         training_method: "joint_quantization"
-        #         switchable_clipping: False  # Not used for LSQ
-        #         sat_weight_normalization: False
-        # lsqplus:
-        #         Conv: "QuanConv"
-        #         loss_name: "cross_entropy"
-        #         bitwidth_options: [4, 8]
-        #         default_bitwidth: 8
-        #         bitwidht_allocation: "random"
-        #         weight_quantization: "lsqplus"
-        #         activation_quantization: "lsqplus"
-        #         validation_function: "random_bitwidths"
-        #         training_method: "joint_quantization"
-        #         switchable_clipping: False  # Not used for LSQPlus
-        #         sat_weight_normalization: False
-        importance_vector:
-                Conv: "QuanConvImportance"
-                loss_name: "importance_vector_loss" # cross_entropy, label_smoothing_ce, importance_vector_loss
-                bitwidth_options: [2, 4, 8]
-                weight_quantization: "dorefa"
-                activation_quantization: "dorefa"
-                validation_function: "importance_vector_comprehensive_validation"
-                training_method: "joint_quantization_with_importance_vector"
-                number_of_configs: 2
-                switchable_clipping: True
-                sat_weight_normalization: False
-                
-                # Importance vector specific params
-                importance_vector:
-                        sampling_strategy: "soft_gumbel_softmax" # 'best_bitwidth', 'soft_gumbel_softmax', 'uniform_sampling'
-                        
-                
-                # Temperature scheduler for Gumbel-Softmax
-                # Used by: models/Temperature_Scheduler.py
-                # Similar to LR scheduler, call temp_scheduler.step() at end of each epoch
-                temp_scheduler:
-                        # Scheduler type: 'cosine', 'exponential', 'linear', 'step', 'cyclic', 'constant'
+        only_audio_resnet18:
+                models: ["student_audio_resnet"]
+                checkpoints: []
+                stages:
+                        - train_type: "vanilla_supervised"
+                          teacher_idx: 0
+                          epochs: 50
+                          loss_name: "cross_entropy"
+                          # No early exit flag means they will have equal weights for all exits
+
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0001
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+
+                lr_scheduler:
                         name: "cosine"
-                        temp_start: 1.0     # High temperature = more exploration
-                        temp_min: 0.1       # Low temperature = more exploitation
-                        # num_epochs is taken from lr_scheduler.train_epochs automatically
-                        
-                        # Additional params for specific schedulers:
-                        # For 'exponential': decay_rate (optional, computed if not provided)
-                        # For 'step': milestones: [30, 60, 80], gamma: 0.5
-                        # For 'cyclic': cycle_length: 20
+                        warmup_prefix: True
+                        warmup_epochs: 0
+                        start_epoch: 0
+                        decay_epochs: 2
+                        decay_rate: 0.2
+
+        only_audio_convonly_early_exit:
+                models: ["student_audio_convonly"]  # Has early_exits: [1, 2] defined in model config
+                stages:
+                        - train_type: "vanilla_supervised"
+                          teacher_idx: 0
+                          epochs: 2  # Short test
+                          loss_name: "cross_entropy"
+                          exit_weights: [0.3, 0.3, 0.4]  # Optional: weights for exit1, exit2, final
+
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0001
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 0
+                        start_epoch: 0
+                        decay_epochs: 2
+                        decay_rate: 0.2
+
+                          
+        
+        # Experiment: Train student model with early exits
+        only_audio_resnet_early_exit:
+                models: ["student_audio_resnet"]  # Has early_exits: [1, 2] defined in model config
+                stages:
+                        - train_type: "vanilla_supervised"
+                          teacher_idx: 0
+                          epochs: 2  # Short test
+                          loss_name: "cross_entropy"
+                          exit_weights: [0.3, 0.3, 0.4]  # Optional: weights for exit1, exit2, final
+
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0001
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 0
+                        start_epoch: 0
+                        decay_epochs: 2
+                        decay_rate: 0.2
+        
+        # Experiment: Audio cascade (Audio ResNet18 -> student ResNet -> student ConvOnly)
+        audio_cascade_2stage:
+                models: ["teacher_audio_resnet18", "student_audio_resnet", "student_audio_convonly"]
                 
-                # Visualization frequency
-                visualize_importance_every: 2  # epochs
+                # Training stages (one per student model)
+                # Stage 0: teacher_resnet18 -> student_audio_resnet
+                # Stage 1: student_audio_resnet -> student_audio_convonly
+                stages:
+                        - name: "resnet18_to_audio_resnet"
+                          teacher_idx: 0
+                          student_idx: 1
+                          epochs: 50
+                          loss_name: "kd_loss"
+                          temperature: 4.0
+                          alpha: 0.5  # weight for KD loss vs CE loss
+                          save_checkpoint: true
+                          
+                        - name: "audio_resnet_to_convonly"
+                          teacher_idx: 1
+                          student_idx: 2
+                          epochs: 100
+                          loss_name: "kd_loss"
+                          temperature: 4.0
+                          alpha: 0.5
+                          save_checkpoint: true
+                
+                # Optimizer config for all student training stages
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.001
+                        warmup_lr: 0.00001
+                        min_lr: 0.00001
+                        clip_grad: 5.0
+                        weight_decay: 0.01
+                
+                # LR scheduler config for all stages
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 5
+# quantization:
+#         enable: False
+
+#         # Conv: "QuanConv" # QuanConv (for Joint Quantization, and Single Precision Training), QuanConvImportance (for importance vector quantization)
+#         importance_vector_comprehensive_validation:
+#                 name: "importance_vector_comprehensive_validation"
+#                 number_of_configs: 8
+#                 bitwidth_options: [4,8]
+#                 bin_tolerance: 0.5
+#         random_bitwidths:
+#                 bitwidth_options: [2, 4, 8]
+#                 name: "random_bitwidths"
+#                 number_of_configs: 8
+#                 bin_tolerance: 0.5
+#         joint_quantization:
+#                 joint_quantization_batch_size: 2
+#                 every_epoch_new_bitwidth_config: True
+#         vanilla_single_precision_training:
+#                 bitwidth_options: [8]
+#         any_precision:
+#                 Conv: "QuanConv"
+#                 loss_name: "cross_entropy"
+#                 bitwidth_options: [2, 4, 8]
+#                 weight_quantization: "dorefa"
+#                 activation_quantization: "pact"
+#                 validation_function: "random_bitwidths"
+#                 training_method: "joint_quantization"
+#                 switchable_clipping: False
+#                 sat_weight_normalization: False
+#                 bn_type: "switchable"
+#         robustquant:
+#                 Conv: "QuanConv"
+#                 bitwidth_options: [2,4,8]
+#                 weight_quantization: "dorefa"
+#                 activation_quantization: "pact"
+#                 validation_function: "random_bitwidths"
+#                 training_method: "joint_quantization"
+#                 switchable_clipping: True
+#                 sat_weight_normalization: False
+#                 loss_name: "kurtosis"
+#                 kurtosis_regularization: True
+#                 kurtosis_target: 1.8
+#                 kurtosis_weight: 0.1
+#         adabits:
+#                 Conv: "QuanConv"
+#                 loss_name: "cross_entropy" # cross_entropy, label_smoothing_ce 
+#                 bitwidth_options: [2, 4, 8]
+#                 default_bitwidth: 8
+#                 bitwidht_allocation: "random"
+#                 weight_quantization: "dorefa"
+#                 activation_quantization: "pact"
+#                 validation_function: "random_bitwidths" # simple_validation, random_bitwidths
+#                 training_method: "joint_quantization" # joint_quantization, vanilla_single_precision_training
+#                 switchable_clipping: True
+#                 sat_weight_normalization: True
+#         bitmixer:
+#                 Conv: "QuanConv"
+#                 loss_name: "cross_entropy"
+#                 bitwidth_options: [2, 4, 8]
+#                 weight_quantization: "dorefa"
+#                 activation_quantization: "pact"
+#                 validation_function: "random_bitwidths"
+#                 training_method: "bitmixer"
+#                 switchable_clipping: False
+#                 sat_weight_normalization: False
+#                 bn_type: "transitional"
+#                 bitmixer:
+#                         stage1_epochs: 5
+#                         stage2_epochs: 5
+#                         sigma_start: 1.0
+#                         sigma_end: 0.25
+#         # pact:
+#         #         Conv: "QuanConv"
+#         #         loss_name: "cross_entropy"
+#         #         bitwidth_options: [4, 8]
+#         #         default_bitwidth: 8
+#         #         bitwidht_allocation: "random"
+#         #         weight_quantization: "dorefa"
+#         #         activation_quantization: "pact"
+#         #         act_quant: "pact"
+#         #         validation_function: "random_bitwidths"
+#         #         training_method: "joint_quantization"
+#         #         switchable_clipping: True
+#         #         sat_weight_normalization: False
+#         # lsq:
+#         #         Conv: "QuanConv"
+#         #         loss_name: "cross_entropy"
+#         #         bitwidth_options: [4, 8]
+#         #         default_bitwidth: 8
+#         #         bitwidht_allocation: "random"
+#         #         weight_quantization: "lsq"
+#         #         activation_quantization: "lsq"
+#         #         validation_function: "random_bitwidths"
+#         #         training_method: "joint_quantization"
+#         #         switchable_clipping: False  # Not used for LSQ
+#         #         sat_weight_normalization: False
+#         # lsqplus:
+#         #         Conv: "QuanConv"
+#         #         loss_name: "cross_entropy"
+#         #         bitwidth_options: [4, 8]
+#         #         default_bitwidth: 8
+#         #         bitwidht_allocation: "random"
+#         #         weight_quantization: "lsqplus"
+#         #         activation_quantization: "lsqplus"
+#         #         validation_function: "random_bitwidths"
+#         #         training_method: "joint_quantization"
+#         #         switchable_clipping: False  # Not used for LSQPlus
+#         #         sat_weight_normalization: False
+#         importance_vector:
+#                 Conv: "QuanConvImportance"
+#                 loss_name: "importance_vector_loss" # cross_entropy, label_smoothing_ce, importance_vector_loss
+#                 bitwidth_options: [2, 4, 8]
+#                 weight_quantization: "dorefa"
+#                 activation_quantization: "dorefa"
+#                 validation_function: "importance_vector_comprehensive_validation"
+#                 training_method: "joint_quantization_with_importance_vector"
+#                 number_of_configs: 2
+#                 switchable_clipping: True
+#                 sat_weight_normalization: False
+                
+#                 # Importance vector specific params
+#                 importance_vector:
+#                         sampling_strategy: "soft_gumbel_softmax" # 'best_bitwidth', 'soft_gumbel_softmax', 'uniform_sampling'
+                        
+                
+#                 # Temperature scheduler for Gumbel-Softmax
+#                 # Used by: models/Temperature_Scheduler.py
+#                 # Similar to LR scheduler, call temp_scheduler.step() at end of each epoch
+#                 temp_scheduler:
+#                         # Scheduler type: 'cosine', 'exponential', 'linear', 'step', 'cyclic', 'constant'
+#                         name: "cosine"
+#                         temp_start: 1.0     # High temperature = more exploration
+#                         temp_min: 0.1       # Low temperature = more exploitation
+#                         # num_epochs is taken from lr_scheduler.train_epochs automatically
+                        
+#                         # Additional params for specific schedulers:
+#                         # For 'exponential': decay_rate (optional, computed if not provided)
+#                         # For 'step': milestones: [30, 60, 80], gamma: 0.5
+#                         # For 'cyclic': cycle_length: 20
+                
+#                 # Visualization frequency
+#                 visualize_importance_every: 2  # epochs
 
                 
 ResNet:

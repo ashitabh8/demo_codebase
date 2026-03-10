@@ -35,6 +35,17 @@ def parse_args():
         required=False,
         help='GPU to use'
     )
+
+    parser.add_argument(
+        '--include_classes',
+        type=int,
+        nargs='+',
+        default=None,
+        help='Optional list of class indices to keep (e.g. 0 1 2). '
+            'If provided, training is restricted to these classes and '
+            'labels are remapped to a contiguous range starting at 0.'
+    )
+
     
     return parser.parse_args()
 
@@ -139,6 +150,7 @@ def get_config():
     config['experiment_name'] = args.experiment_name
     config['yaml_path'] = args.yaml_path
     config['device'] = f'cuda:{args.gpu}'
+    config['include_classes'] = args.include_classes
     
     return config
 

@@ -73,6 +73,37 @@ def main():
     
     logging.info(f"  Models in cascade: {models_list}")
     logging.info(f"  Number of stages: {len(stages)}")
+
+    include = config.get('include_classes')
+    if include:
+        include = sorted(set(include))
+        task_cfg = config['vehicle_classification']
+
+        num_classes_orig = task_cfg['num_classes']
+        invalid = [c for c in include if c < 0 or c >= num_classes_orig]
+        if invalid:
+            raise ValueError(
+                f"include_classes contains invalid indices {invalid} "
+                f"for num_classes={num_classes_orig}"
+            )
+
+        # old index -> new contiguous index
+        old_to_new = {old: new for new, old in enumerate(include)}
+        new_class_names = [task_cfg['class_names'][i] for i in include]
+
+        # Update task config to reflect the subset
+        task_cfg['num_classes'] = len(include)
+        task_cfg['class_names'] = new_class_names
+
+        # Store mapping for the dataset layer
+        config['include_classes'] = include
+        config['include_classes_mapping'] = old_to_new
+
+        logging.info(f"Using class subset: {include}")
+        logging.info(f"Updated num_classes: {task_cfg['num_classes']}")
+        logging.info(f"Updated class_names: {task_cfg['class_names']}")
+
+    
     
     # ========================================================================
     # 2. Create Dataloaders
@@ -169,7 +200,12 @@ def main():
             # ================================================================
             # Load checkpoint if not first stage
             # ================================================================
-            if stage_idx > 0:
+            checkpoints_list = experiment_config.get("checkpoints", [])
+            if model_idx < len(checkpoints_list) and checkpoints_list[model_idx]:
+                ckpt_path = checkpoints_list[model_idx]
+                model = load_checkpoint(model, ckpt_path, device)
+                logging.info(f"Loaded model from checkpoint: {ckpt_path}")
+            elif stage_idx > 0:
                 prev_checkpoint = stage_checkpoints[stage_idx - 1]
                 logging.info(f"\nLoading teacher checkpoint from previous stage:")
                 logging.info(f"  {prev_checkpoint}")

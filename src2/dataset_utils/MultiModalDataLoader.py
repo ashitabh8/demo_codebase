@@ -194,6 +194,13 @@ def create_dataloaders(config):
         num_classes=num_classes,
         label_keys=label_keys
     )
+
+    include = config.get("include_classes")
+    label_map = config.get("include_classes_mapping")
+    if include and label_map:
+        train_dataset = SubsetClassDataset(train_dataset, include, label_map)
+        val_dataset   = SubsetClassDataset(val_dataset,   include, label_map)
+        test_dataset  = SubsetClassDataset(test_dataset,  include, label_map)
     
     # Create dataloaders
     logging.info("Creating dataloaders...")
@@ -314,8 +321,62 @@ def create_single_dataloader(config, split="train", batch_size=32, num_workers=4
             pin_memory=True,
             drop_last=False
         )
+
+    
     
     logging.info(f"{split.capitalize()} samples: {len(dataset)}, batches: {len(dataloader)}")
     
     return dataloader
 
+class SubsetClassDataset(Dataset):
+    """
+    Wraps a base MultiModalDataset and:
+    - keeps only samples whose original label is in allowed_classes
+    - remaps labels using label_map (old_idx -> new_idx in 0..K-1)
+    - supports balanced sampling via its own compute_sample_weights_for_balanced_sampling()
+    """
+    def __init__(self, base_dataset, allowed_classes, label_map):
+        self.base = base_dataset
+        self.allowed = set(allowed_classes)
+        self.label_map = label_map
+
+        # Precompute indices to keep
+        self.indices = []
+        for base_idx in range(len(self.base)):
+            _, label, _ = self.base[base_idx]
+            label_idx = int(label.item() if hasattr(label, "item") else label)
+            if label_idx in self.allowed:
+                self.indices.append(base_idx)
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, i):
+        base_idx = self.indices[i]
+        data, label, _ = self.base[base_idx]
+        label_idx = int(label.item() if hasattr(label, "item") else label)
+
+        # Remap to new contiguous label
+        new_label = self.label_map[label_idx]
+        return data, torch.tensor(new_label, dtype=torch.long), base_idx
+
+    def compute_sample_weights_for_balanced_sampling(self):
+        """
+        Compute balanced-sampling weights over the subset, using *remapped* labels.
+        """
+        # K is the number of target classes
+        K = len(set(self.label_map.values()))
+        label_count = [0 for _ in range(K)]
+        sample_labels = []
+
+        # Iterate over subset indices; __getitem__ returns remapped label
+        for i in range(len(self.indices)):
+            _, label, _ = self[i]
+            label_idx = int(label.item())
+            sample_labels.append(label_idx)
+            label_count[label_idx] += 1
+
+        # Inverse-frequency weights
+        self.sample_weights = []
+        for lbl in sample_labels:
+            self.sample_weights.append(1.0 / label_count[lbl])

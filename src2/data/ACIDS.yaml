@@ -38,13 +38,13 @@ batch_size: 32
 num_workers: 4
 use_balanced_sampling: True
 
-base_experiment_dir: /home/misra8/baseline/src2/experiments
+base_experiment_dir: /home/madhav5/demo_codebase/src2/experiments
 
 # Segments
 num_segments: 7
 
 # Locations 
-num_locaiton: 1
+num_location: 1
 location_names: ["shake"]
 
 # Modality names
@@ -81,7 +81,7 @@ models:
         # This should be a pre-trained model that we load from checkpoint
         teacher_audio_resnet18:
                 model_source: "create_single_modal_model"
-                model_type: "resnet"
+                model_type: "resnet_simple"
                 active_modality: "audio"
                 layers: [2, 2, 2, 2]  # Standard ResNet18
                 filter_sizes: [64, 128, 256, 512]  # Standard ResNet18 filters
@@ -91,11 +91,13 @@ models:
                 dropout_ratio: 0.2
                 fc_dim: 512
                 early_exits: []  # No early exits for teacher
+                weight_only_qat: false
+                weight_only_bits: 4
         
         # Student 1: Audio-only ResNet (~757 KB)
         student_audio_resnet:
                 model_source: "create_single_modal_model"
-                model_type: "resnet"
+                model_type: "resnet_simple"
                 active_modality: "audio"
                 layers: [1, 1, 1, 1]
                 filter_sizes: [16, 32, 48, 96]
@@ -104,7 +106,9 @@ models:
                 use_maxpool: false
                 dropout_ratio: 0.1
                 fc_dim: 64
-                early_exits: [1, 2]
+                early_exits: []
+                weight_only_qat: true
+                weight_only_bits: 2
         
         # Student 2: Audio-only ConvOnly (~730 KB)
         student_audio_convonly:
@@ -164,6 +168,7 @@ distillation:
 
         only_audio_resnet18:
                 models: ["student_audio_resnet"]
+                checkpoints: []
                 stages:
                         - train_type: "vanilla_supervised"
                           teacher_idx: 0
