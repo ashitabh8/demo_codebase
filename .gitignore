@@ -146,3 +146,4 @@ scripts/*.csv
 src2/experiments/*
 # But track the directory itself (if you want to keep the empty directory in git)
 !src2/experiments/.gitkeep
+.worktrees/
