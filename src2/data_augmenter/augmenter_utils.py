@@ -62,6 +62,18 @@ class AugmenterConfig:
         if "preprocess_mode" in experiment_config:
             self.dataset_config["preprocess_mode"] = experiment_config["preprocess_mode"]
 
+        # When using mel preprocessing, freq augmenters see mel_bins not raw spectrum_len.
+        # Override loc_mod_spectrum_len so FreqMaskAugmenter computes correct band widths.
+        if self.dataset_config.get("preprocess_mode") == "mel":
+            import copy
+            mel_bins = self.dataset_config.get("mel_bins", 80)
+            if "loc_mod_spectrum_len" in self.dataset_config:
+                overridden = copy.deepcopy(self.dataset_config["loc_mod_spectrum_len"])
+                for loc in overridden:
+                    for mod in overridden[loc]:
+                        overridden[loc][mod] = mel_bins
+                self.dataset_config["loc_mod_spectrum_len"] = overridden
+
 
 def create_augmenter(config, augmentation_mode="no", experiment_config=None):
     """
