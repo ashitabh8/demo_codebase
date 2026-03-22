@@ -131,10 +131,11 @@ def main():
 
         # Memory profile (B=1; divide parameter_memory by 4 for INT8 estimate)
         _location = config["location_names"][0]
-        _modality = config["models"][model_name]["active_modality"]
-        _in_ch = config["loc_mod_in_freq_channels"][_location][_modality]
+        _model_cfg = config["models"][model_name]
+        _modality = _model_cfg["active_modality"]
+        _in_ch = _model_cfg.get("in_channels", config["loc_mod_in_freq_channels"][_location][_modality])
         _n_segs = config.get("num_segments", 10)
-        _spec_len = config["loc_mod_spectrum_len"][_location][_modality]
+        _spec_len = _model_cfg.get("in_spectrum_len", config["loc_mod_spectrum_len"][_location][_modality])
         _dummy = {_location: {_modality: torch.randn(1, _in_ch, _n_segs, _spec_len)}}
         _mem = get_total_memory(model, _dummy, unit="MB")
         logging.info("Memory profile (float32 / INT8 weight-only estimate):")
@@ -178,6 +179,7 @@ def main():
                 optimizer=optimizer,
                 scheduler=scheduler,
                 num_epochs=stage_epochs,
+                model_name=model_name,
             )
         elif train_type == "vanilla_supervised_contrastive":
             logging.info(
@@ -197,6 +199,7 @@ def main():
                     optimizer=optimizer,
                     scheduler=scheduler,
                     num_epochs=stage_epochs,
+                    model_name=model_name,
                 )
             )
         elif train_type == "distillation":

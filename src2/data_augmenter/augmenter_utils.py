@@ -52,10 +52,15 @@ class AugmenterConfig:
             "loc_mod_spectrum_len", "time_mask", "freq_mask", "phase_shift", "jitter",
             "mixup", "scaling", "permutation", "negation", "horizontal_flip", "channel_shuffle",
             "time_warp", "mag_warp", "MissModalityGenerator", "specmix", "num_sensors",
+            "preprocess_mode", "mel_bins", "mel_fmin", "mel_fmax", "sample_rate", "n_fft",
         )
         for key in _augmenter_config_keys:
             if key in config:
                 self.dataset_config[key] = config[key]
+
+        # Experiment-level preprocess_mode overrides top-level default
+        if "preprocess_mode" in experiment_config:
+            self.dataset_config["preprocess_mode"] = experiment_config["preprocess_mode"]
 
 
 def create_augmenter(config, augmentation_mode="no", experiment_config=None):
