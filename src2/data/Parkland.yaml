@@ -49,6 +49,14 @@ normalization:
         # method: "maxabs"  # Use MaxAbsScaler (scale to [-1, 1] by max absolute value)
         # method: "none"  # No normalization
 
+# Preprocessing mode: "fft" (default) or "mel"
+preprocess_mode: "fft"
+sample_rate: 16000
+n_fft: 1600
+mel_bins: 80
+mel_fmin: 20.0
+mel_fmax: 8000.0
+
 # Segments
 num_segments: 10
 
@@ -377,6 +385,15 @@ experiments:
                 fixed_augmenters:
                         time_augmenters: ["scaling", "time_mask", "time_mask"]
                         freq_augmenters: ["phase_shift", "freq_mask", "freq_mask"]
+
+        only_audio_deepsense_dw_mel:
+                model: "student_audio_deepsense_dw_mel"   # will be added in Task 4
+                training: "vanilla_supervised_contrastive"
+                preprocess_mode: "mel"    # override for this experiment
+                fixed_augmenters:
+                        time_augmenters: ["time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
 # quantization:
 #         enable: False
 
