@@ -103,7 +103,7 @@ class StandardScaler(BaseNormalizer):
                 std = all_data.std(dim=0)    # shape [bins]
 
                 # Avoid division by zero per-bin
-                std = torch.where(std < self.epsilon, torch.ones_like(std), std)
+                std = torch.where(torch.isnan(std) | (std < self.epsilon), torch.ones_like(std), std)
 
                 self.statistics[location][modality] = {
                     'mean': mean,
@@ -139,8 +139,8 @@ class StandardScaler(BaseNormalizer):
                     normalized_data[location][modality] = data[location][modality]
                     continue
                 
-                mean = self.statistics[location][modality]['mean']
-                std = self.statistics[location][modality]['std']
+                mean = self.statistics[location][modality]['mean'].to(data[location][modality].device)
+                std = self.statistics[location][modality]['std'].to(data[location][modality].device)
                 
                 # Apply standardization: (x - mean) / std
                 normalized_data[location][modality] = (data[location][modality] - mean) / std
@@ -244,8 +244,8 @@ class MinMaxScaler(BaseNormalizer):
                     normalized_data[location][modality] = data[location][modality]
                     continue
                 
-                data_min = self.statistics[location][modality]['min']
-                data_range = self.statistics[location][modality]['range']
+                data_min = self.statistics[location][modality]['min'].to(data[location][modality].device)
+                data_range = self.statistics[location][modality]['range'].to(data[location][modality].device)
                 
                 # Apply min-max scaling: (x - min) / range * scale + min_val
                 normalized_data[location][modality] = \
