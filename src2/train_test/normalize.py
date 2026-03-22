@@ -82,37 +82,35 @@ class StandardScaler(BaseNormalizer):
                     if modality not in location_modality_data[location]:
                         location_modality_data[location][modality] = []
                     
-                    # Flatten all dimensions except batch
-                    # Shape: [batch, ...] -> [batch * ...]
-                    batch_data = data[location][modality].reshape(-1)
+                    # Flatten all dimensions except the last (frequency/time bins)
+                    # Shape: [batch, ...] -> [N, bins]
+                    batch_data = data[location][modality].reshape(-1, data[location][modality].shape[-1])
                     location_modality_data[location][modality].append(batch_data)
-            
+
             if (batch_idx + 1) % 50 == 0:
                 logging.info(f"  Processed {batch_idx + 1}/{len(data_loader)} batches")
-        
+
         # Compute mean and std for each location-modality pair
         for location in location_modality_data:
             if location not in self.statistics:
                 self.statistics[location] = {}
-            
+
             for modality in location_modality_data[location]:
-                # Concatenate all batches
-                all_data = torch.cat(location_modality_data[location][modality])
-                
-                mean = all_data.mean().item()
-                std = all_data.std().item()
-                
-                # Avoid division by zero
-                if std < self.epsilon:
-                    std = 1.0
-                    logging.warning(f"  {location}/{modality}: std is very small ({std:.2e}), setting to 1.0")
-                
+                # Concatenate all batches -> shape [total_samples, bins]
+                all_data = torch.cat(location_modality_data[location][modality], dim=0)
+
+                mean = all_data.mean(dim=0)  # shape [bins]
+                std = all_data.std(dim=0)    # shape [bins]
+
+                # Avoid division by zero per-bin
+                std = torch.where(std < self.epsilon, torch.ones_like(std), std)
+
                 self.statistics[location][modality] = {
                     'mean': mean,
                     'std': std
                 }
-                
-                logging.info(f"  {location}/{modality}: mean={mean:.4f}, std={std:.4f}")
+
+                logging.info(f"  {location}/{modality}: mean_mean={mean.mean().item():.4f}, mean_std={std.mean().item():.4f}")
         
         self.is_fitted = True
         logging.info("StandardScaler fitted successfully")
@@ -188,39 +186,34 @@ class MinMaxScaler(BaseNormalizer):
                     if modality not in location_modality_data[location]:
                         location_modality_data[location][modality] = []
                     
-                    # Flatten all dimensions except batch
-                    batch_data = data[location][modality].reshape(-1)
+                    # Flatten all dimensions except the last (frequency/time bins)
+                    # Shape: [batch, ...] -> [N, bins]
+                    batch_data = data[location][modality].reshape(-1, data[location][modality].shape[-1])
                     location_modality_data[location][modality].append(batch_data)
-            
+
             if (batch_idx + 1) % 50 == 0:
                 logging.info(f"  Processed {batch_idx + 1}/{len(data_loader)} batches")
-        
+
         # Compute min and max for each location-modality pair
         for location in location_modality_data:
             if location not in self.statistics:
                 self.statistics[location] = {}
-            
+
             for modality in location_modality_data[location]:
-                # Concatenate all batches
-                all_data = torch.cat(location_modality_data[location][modality])
-                
-                data_min = all_data.min().item()
-                data_max = all_data.max().item()
-                
-                # Avoid division by zero
-                if abs(data_max - data_min) < self.epsilon:
-                    data_range = 1.0
-                    logging.warning(f"  {location}/{modality}: range is very small, setting to 1.0")
-                else:
-                    data_range = data_max - data_min
-                
+                # Concatenate all batches -> shape [total_samples, bins]
+                all_data = torch.cat(location_modality_data[location][modality], dim=0)
+
+                data_min = all_data.min(dim=0).values   # shape [bins]
+                data_max = all_data.max(dim=0).values   # shape [bins]
+                data_range = (data_max - data_min).clamp(min=self.epsilon)  # shape [bins]
+
                 self.statistics[location][modality] = {
                     'min': data_min,
                     'max': data_max,
                     'range': data_range
                 }
-                
-                logging.info(f"  {location}/{modality}: min={data_min:.4f}, max={data_max:.4f}")
+
+                logging.info(f"  {location}/{modality}: mean_min={data_min.mean().item():.4f}, mean_max={data_max.mean().item():.4f}")
         
         self.is_fitted = True
         logging.info("MinMaxScaler fitted successfully")
