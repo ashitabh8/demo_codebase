@@ -215,6 +215,33 @@ models:
                 fc_dim: 512
                 dropout_ratio: 0.2
 
+        # Student 7: Mel-optimized DeepSense Depthwise (80 Mel bins, single-channel magnitude)
+        # Uses Mel spectrogram input: in_channels=1 (magnitude), in_spectrum_len=80 (Mel bins).
+        # active_modality is "audio" so the model indexes freq_x["shake"]["audio"], which is
+        # where MelPreprocessor places its output. in_channels/in_spectrum_len override the
+        # dataset-level FFT defaults (2 channels, 1600 bins) without affecting other models.
+        # freq_out: 80 -> (80-5)//2+1=38 -> (38-3)//2+1=18 -> 18 (3 layers)
+        student_audio_deepsense_dw_mel:
+                model_source: "create_single_modal_model"
+                model_type: "deepsense_dw"
+                active_modality: "audio"
+                # Per-model overrides for Mel input shape (bypasses loc_mod_in_freq_channels /
+                # loc_mod_spectrum_len so that FFT-based models are unaffected)
+                in_channels: 1       # Mel: single magnitude channel
+                in_spectrum_len: 80  # 80 Mel bins
+                # Freq 2D depthwise-separable conv stack
+                # freq_out: 80 -> (80-5)//2+1=38 -> (38-3)//2+1=18 -> 18
+                channels_freq:     [64, 128, 256]
+                kernel_sizes_freq: [[1, 5], [1, 3], [1, 3]]
+                strides_freq:      [[1, 2], [1, 2], [1, 1]]
+                # Temporal 1D depthwise-separable conv stack
+                temporal_channels: 256
+                num_temporal_layers: 4
+                temporal_kernel: 3
+                # Head
+                fc_dim: 512
+                dropout_ratio: 0.2
+
 # =============================================================================
 # Training Config Zoo: Reusable Training Recipes
 # =============================================================================

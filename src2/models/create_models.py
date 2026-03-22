@@ -279,8 +279,17 @@ def create_deepsense_dw(config, model_config_key):
         )
     location_name = location_names[0]
 
-    in_channels = config["loc_mod_in_freq_channels"][location_name][active_modality]
-    in_spectrum_len = config["loc_mod_spectrum_len"][location_name][active_modality]
+    # Allow per-model overrides for in_channels / in_spectrum_len so that a
+    # mel-spectrogram model (different shape than FFT) can reuse active_modality
+    # "audio" without modifying the dataset-level config dicts.
+    if "in_channels" in model_cfg:
+        in_channels = model_cfg["in_channels"]
+    else:
+        in_channels = config["loc_mod_in_freq_channels"][location_name][active_modality]
+    if "in_spectrum_len" in model_cfg:
+        in_spectrum_len = model_cfg["in_spectrum_len"]
+    else:
+        in_spectrum_len = config["loc_mod_spectrum_len"][location_name][active_modality]
     num_classes = config["vehicle_classification"]["num_classes"]
 
     channels_freq = model_cfg["channels_freq"]
