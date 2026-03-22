@@ -10,6 +10,7 @@ This module provides core training/testing functionality with:
 """
 
 import os
+import copy
 import logging
 import yaml
 import shutil
@@ -19,30 +20,128 @@ import torch
 import torch.nn as nn
 import numpy as np
 from sklearn.metrics import confusion_matrix as sklearn_confusion_matrix
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
 import seaborn as sns
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
+# ----------------------------------------------------------------------------
+# Logging helpers (input shapes + peak RAM)
+# ----------------------------------------------------------------------------
 
+def _format_tensor_shape(t: torch.Tensor) -> str:
+    return "x".join(str(d) for d in t.shape)
+
+
+def _log_single_modality_input_shape(model, data, logger, *, epoch: int, batch_idx: int) -> None:
+    """
+    Log the input tensor shape that is actually used by a single-modality model.
+
+    Our single-modal model wrappers index the dict input as:
+      freq_x[model.location_name][model.modality_name] = tensor [B, C, H, W]
+    The dataloader may still include other modalities; we log:
+      - the tensor used by the model (preferred)
+      - any other modalities present for the same location (if present)
+    """
+    if logger is None:
+        return
+
+    if not isinstance(data, dict):
+        if isinstance(data, torch.Tensor):
+            logger.info(
+                f"Input batch shape (epoch={epoch}, batch={batch_idx}): "
+                f"{tuple(data.shape)} dtype={data.dtype} device={data.device}"
+            )
+        else:
+            logger.info(
+                f"Input batch type (epoch={epoch}, batch={batch_idx}): {type(data)}"
+            )
+        return
+
+    loc = getattr(model, "location_name", None)
+    mod = getattr(model, "modality_name", None)
+
+    # Preferred: log the shape used by the wrapper's forward().
+    if loc is not None and mod is not None and loc in data and mod in data[loc]:
+        t = data[loc][mod]
+        if isinstance(t, torch.Tensor):
+            # Reuse the existing input-memory estimator for consistent accounting.
+            try:
+                from models.create_models import get_input_memory
+
+                input_mem_info = get_input_memory(data, unit="MB")
+                used_mem_mb = None
+                for info in input_mem_info.get("shape_info", []):
+                    if info.get("location") == loc and info.get("modality") == mod:
+                        used_mem_mb = info.get("memory")
+                        break
+
+                total_input_mb = input_mem_info.get("total_memory", None)
+            except Exception:
+                used_mem_mb = None
+                total_input_mb = None
+
+            mem_str = ""
+            if used_mem_mb is not None:
+                mem_str = f" estimated_input_mem_per_sample={used_mem_mb:.4f} MB"
+            if total_input_mb is not None:
+                mem_str += f" total_input_mem_per_sample={total_input_mb:.4f} MB"
+
+            logger.info(
+                f"Input tensor shape used by model (epoch={epoch}, batch={batch_idx}): "
+                f"{loc}/{mod} -> ({_format_tensor_shape(t)}) dtype={t.dtype} device={t.device}{mem_str}"
+            )
+            other_modalities = [k for k in data[loc].keys() if k != mod]
+            if other_modalities:
+                logger.info(
+                    f"  Note: other modalities present for {loc} (model uses {mod}): {other_modalities}"
+                )
+            return
+
+    # Fallback: dump shapes for all tensors in the dict.
+    parts = []
+    for loc_k in data:
+        for mod_k in data[loc_k]:
+            t = data[loc_k][mod_k]
+            if isinstance(t, torch.Tensor):
+                parts.append(f"{loc_k}/{mod_k}=({_format_tensor_shape(t)})")
+            else:
+                parts.append(f"{loc_k}/{mod_k}=<non-tensor {type(t)}>")
+    logger.info(
+        f"Input dict tensor shapes (epoch={epoch}, batch={batch_idx}): " + ", ".join(parts)
+    )
+
+
+def _get_process_peak_rss_kb() -> int:
+    """
+    Return peak resident-set-size (RSS) in KB for the current process.
+
+    On Linux, `ru_maxrss` is in KB.
+    """
+    import resource
+
+    return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+
+#check this line
 # ============================================================================
 # Optimizer and Scheduler Setup
 # ============================================================================
 
-def setup_optimizer(model, config, experiment_config=None):
+def setup_optimizer(model, config, training_config=None):
     """
     Create optimizer based on configuration.
-    
+
     Args:
         model: PyTorch model
         config: Configuration dictionary (full config)
-        experiment_config: Experiment-specific config (optional, for distillation)
-    
+        training_config: Training config dict with optimizer settings
+
     Returns:
         optimizer: Configured optimizer
     """
-    # If experiment_config provided, use its optimizer settings
-    optimizer_config = experiment_config['optimizer']
+    optimizer_config = training_config['optimizer']
     
     optimizer_name = optimizer_config['name']
     start_lr = optimizer_config['start_lr']
@@ -78,23 +177,21 @@ def setup_optimizer(model, config, experiment_config=None):
     return optimizer
 
 
-def setup_scheduler(optimizer, config, experiment_config, stage_config):
+def setup_scheduler(optimizer, config, training_config):
     """
     Create learning rate scheduler based on configuration.
-    
+
     Args:
         optimizer: PyTorch optimizer
         config: Configuration dictionary (full config)
-        experiment_config: Experiment-specific config (optional, for distillation)
-        num_epochs: Number of training epochs (optional, for distillation stages)
-    
+        training_config: Training config dict with lr_scheduler and epochs
+
     Returns:
         scheduler: Learning rate scheduler (or None)
     """
-    # If experiment_config provided, use its scheduler settings
-    scheduler_config = experiment_config['lr_scheduler']
+    scheduler_config = training_config['lr_scheduler']
     scheduler_name = scheduler_config['name']
-    train_epochs = stage_config['epochs']
+    train_epochs = training_config['epochs']
     warmup_epochs = scheduler_config['warmup_epochs']
     
     if scheduler_name == "cosine":
@@ -140,6 +237,117 @@ def setup_scheduler(optimizer, config, experiment_config, stage_config):
         scheduler = None
     
     return scheduler
+
+
+# ============================================================================
+# Config Utilities
+# ============================================================================
+
+def validate_and_resolve_training_config(config):
+    """
+    Validate top-level experiment/training config and log key selections.
+
+    Args:
+        config: Full config dict
+
+    Returns:
+        tuple:
+            experiment_name,
+            experiment_config,
+            model_name,
+            training_config_name,
+            training_config,
+            train_type,
+            stage_epochs,
+            loss_name
+    """
+    experiment_name = config.get("experiment_name")
+    if experiment_name is None:
+        raise ValueError(
+            "experiment_name not found in config. Please provide --experiment_name argument."
+        )
+
+    logging.info(f"  Experiment: {experiment_name}")
+    logging.info(f"  Dataset: {config.get('yaml_path', 'Unknown')}")
+    logging.info(f"  Device: {config.get('device', 'cpu')}")
+
+    if "experiments" not in config or not config["experiments"].get("enabled", False):
+        raise ValueError(
+            "Experiments not enabled in config. Set experiments.enabled: true"
+        )
+
+    available = [k for k in config["experiments"] if k != "enabled"]
+    if experiment_name not in config["experiments"]:
+        raise ValueError(
+            f"Experiment '{experiment_name}' not found. "
+            f"Available experiments: {available}"
+        )
+
+    experiment_config = config["experiments"][experiment_name]
+    model_name = experiment_config["model"]
+    training_config_name = experiment_config["training"]
+
+    if training_config_name not in config["training_configs"]:
+        raise ValueError(
+            f"Training config '{training_config_name}' not found in training_configs"
+        )
+    training_config = config["training_configs"][training_config_name]
+
+    train_type = training_config["type"]
+    stage_epochs = training_config["epochs"]
+    loss_name = training_config["loss_name"]
+
+    logging.info(f"  Student model: {model_name}")
+    logging.info(f"  Training config: {training_config_name}")
+    logging.info(f"  Training type: {train_type}")
+    logging.info(f"  Loss: {loss_name}")
+
+    return (
+        experiment_name,
+        experiment_config,
+        model_name,
+        training_config_name,
+        training_config,
+        train_type,
+        stage_epochs,
+        loss_name,
+    )
+
+
+def apply_class_subset(config):
+    """
+    If include_classes is set in config, restrict vehicle_classification to
+    that subset and update config in-place with the remapped class info.
+
+    Args:
+        config: Full config dict (mutated in place)
+    """
+    include = config.get('include_classes')
+    if not include:
+        return
+
+    include = sorted(set(include))
+    task_cfg = config['vehicle_classification']
+
+    num_classes_orig = task_cfg['num_classes']
+    invalid = [c for c in include if c < 0 or c >= num_classes_orig]
+    if invalid:
+        raise ValueError(
+            f"include_classes contains invalid indices {invalid} "
+            f"for num_classes={num_classes_orig}"
+        )
+
+    old_to_new = {old: new for new, old in enumerate(include)}
+    new_class_names = [task_cfg['class_names'][i] for i in include]
+
+    task_cfg['num_classes'] = len(include)
+    task_cfg['class_names'] = new_class_names
+    config['include_classes'] = include
+    config['include_classes_mapping'] = old_to_new
+
+    logging.info(f"Using class subset: {include}")
+    logging.info(f"Updated num_classes: {task_cfg['num_classes']}")
+    logging.info(f"Updated class_names: {task_cfg['class_names']}")
 
 
 # ============================================================================
@@ -224,6 +432,41 @@ def setup_experiment_dir(config, experiment_name=None):
     logging.info(f"  Experiment ID: {experiment_id}")
     
     return str(experiment_dir), str(tensorboard_dir)
+
+
+def setup_train_file_logging(experiment_dir, argv=None):
+    """
+    Attach a file logger for training and log the invoked command line.
+
+    Args:
+        experiment_dir: Path to experiment directory
+        argv: Command-line args list (e.g., sys.argv)
+
+    Returns:
+        tuple:
+            log_file: Path object to train log file
+            file_handler: Attached logging handler
+    """
+    logs_dir = Path(experiment_dir) / "logs"
+    log_file = logs_dir / "train.log"
+
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    )
+    logging.getLogger().addHandler(file_handler)
+
+    logging.info(f"Logging to file: {log_file}")
+
+    if argv is None:
+        argv = []
+    command_line = " ".join(argv)
+    logging.info("")
+    logging.info("Command line used to run this script:")
+    logging.info(f"  {command_line}")
+
+    return log_file, file_handler
 
 
 def load_checkpoint(model, checkpoint_path, device):
@@ -324,6 +567,76 @@ def calculate_macro_f1_from_confusion_matrix(cm: np.ndarray) -> float:
         f1s.append((2.0 * tp / denom) if denom > 0 else 0.0)
 
     return float(np.mean(f1s)) if f1s else 0.0
+
+
+def log_confusion_matrix_table(cm, class_names, logger, title="Validation Confusion Matrix"):
+    """
+    Log a confusion matrix as an ASCII table with per-class recall and precision.
+
+    Example output:
+        ============================================================
+        Best Validation Confusion Matrix  (epoch 72  |  val_acc=0.7240)
+        Predicted:   Polaris  Warhog   Truck  ...
+        ----------------------------------------------------------------
+          Polaris |      45       2       1  ...  | Recall: 0.900
+           Warhog |       3      38       5  ...  | Recall: 0.808
+        ...
+        ----------------------------------------------------------------
+        Precision   0.900   0.844   ...
+        Macro-F1: 0.895
+        ============================================================
+
+    Args:
+        cm:          Confusion matrix (num_classes × num_classes) numpy array, rows=actual, cols=predicted
+        class_names: List of class name strings
+        logger:      Logger instance
+        title:       Title string logged above the table
+    """
+    import numpy as np
+    n = cm.shape[0]
+    if class_names is None:
+        class_names = [str(i) for i in range(n)]
+
+    col_w = max(max(len(name) for name in class_names), 6) + 1
+    label_w = max(max(len(name) for name in class_names), 8) + 2
+    sep = "-" * (label_w + 3 + n * col_w + 2 + 12)
+
+    logger.info("=" * len(sep))
+    logger.info(title)
+    logger.info(sep)
+
+    # Header row
+    header = " " * (label_w + 3)
+    for name in class_names:
+        header += name.rjust(col_w)
+    header += "   Recall"
+    logger.info(header)
+    logger.info(sep)
+
+    # Data rows (one per actual class)
+    row_totals = cm.sum(axis=1)
+    for i, name in enumerate(class_names):
+        row_str = name.rjust(label_w) + " |"
+        for j in range(n):
+            row_str += str(int(cm[i, j])).rjust(col_w)
+        recall = cm[i, i] / row_totals[i] if row_totals[i] > 0 else 0.0
+        row_str += f"  | {recall:.3f}"
+        logger.info(row_str)
+
+    logger.info(sep)
+
+    # Precision row
+    col_totals = cm.sum(axis=0)
+    prec_str = "Precision".rjust(label_w) + "  "
+    for j in range(n):
+        p = cm[j, j] / col_totals[j] if col_totals[j] > 0 else 0.0
+        prec_str += f"{p:.3f}".rjust(col_w)
+    logger.info(prec_str)
+
+    # Macro-F1
+    f1 = calculate_macro_f1_from_confusion_matrix(cm)
+    logger.info(f"Macro-F1: {f1:.4f}")
+    logger.info("=" * len(sep))
 
 
 def plot_confusion_matrix(cm, class_names=None, normalize=False):
@@ -467,429 +780,278 @@ def validate(model, val_loader, loss_fn, device, augmenter=None, apply_augmentat
     }
 
 
-def validate_with_early_exits(model, val_loader, loss_fn, device, num_classes=None, augmenter=None, apply_augmentation_fn=None):
+def log_supcon_embedding_scatter(
+    writer,
+    *,
+    features,
+    labels,
+    class_names,
+    global_step,
+    tag="SupCon/embeddings_val_pca2d",
+    max_points=2048,
+    random_state=0,
+    logger=None,
+):
     """
-    Validation function for models with early exits.
-    
-    Evaluates each exit independently to track how well each intermediate
-    classifier is performing.
-    
-    Args:
-        model: PyTorch model with early exits
-        val_loader: Validation data loader
-        loss_fn: Loss function (handles early exits)
-        device: Device to run validation on
-        num_classes: Number of classes (optional, inferred from outputs if None)
-        augmenter: Data augmenter object (optional)
-        apply_augmentation_fn: Function to apply augmentation (optional)
-    
-    Returns:
-        dict: {
-            'total_loss': float,  # Combined loss from all exits
-            'exits': [
-                {'loss': float, 'accuracy': float, 'predictions': list, 'labels': list},
-                {'loss': float, 'accuracy': float, 'predictions': list, 'labels': list},
-                ...  # One entry per early exit
-            ],
-            'final': {'loss': float, 'accuracy': float, 'predictions': list, 'labels': list}
-        }
+    PCA-reduce validation embeddings to 2D (or 1D if feature dim is 1) and log a scatter figure to TensorBoard.
+    Embeddings are L2-normalized before projection (matching SupCon geometry).
+    """
+    log = logger or logging.getLogger("train_supcon")
+    if features is None or labels is None:
+        return False
+    if isinstance(features, torch.Tensor):
+        features = features.detach().cpu().float().numpy()
+    if isinstance(labels, torch.Tensor):
+        labels = labels.detach().cpu().long().numpy()
+    features = np.asarray(features, dtype=np.float32)
+    labels = np.asarray(labels, dtype=np.int64)
+    n = features.shape[0]
+    if n == 0:
+        log.warning("SupCon embedding scatter skipped: no samples.")
+        return False
+    d = features.shape[1]
+    if d < 1:
+        log.warning("SupCon embedding scatter skipped: empty feature dimension.")
+        return False
+
+    # Match contrastive geometry used in loss computation.
+    features = features / np.clip(np.linalg.norm(features, axis=1, keepdims=True), a_min=1e-12, a_max=None)
+
+    if n > max_points:
+        rng = np.random.RandomState(random_state)
+        idx = rng.choice(n, size=max_points, replace=False)
+        features = features[idx]
+        labels = labels[idx]
+        n = max_points
+
+    n_comp = min(2, d)
+    coords = PCA(n_components=n_comp, random_state=random_state).fit_transform(features)
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    unique_labels = np.unique(labels)
+    for c in unique_labels:
+        mask = labels == c
+        name = class_names[int(c)] if class_names is not None and int(c) < len(class_names) else str(int(c))
+        if n_comp == 2:
+            ax.scatter(coords[mask, 0], coords[mask, 1], label=name, alpha=0.6, s=12)
+        else:
+            ax.scatter(coords[mask, 0], np.zeros(mask.sum()), label=name, alpha=0.6, s=12)
+    ax.set_xlabel("PC1")
+    ax.set_ylabel("PC2" if n_comp == 2 else "(1D)")
+    ax.set_title("Validation embeddings (clean val, normalized, PCA)")
+    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8)
+    fig.tight_layout()
+    writer.add_figure(tag, fig, global_step)
+    plt.close(fig)
+    return True
+
+
+def log_supcon_embedding_tsne_scatter(
+    writer,
+    *,
+    features,
+    labels,
+    class_names,
+    global_step,
+    tag="SupCon/embeddings_val_tsne2d",
+    max_points=1000,
+    random_state=0,
+    logger=None,
+):
+    """
+    t-SNE-reduce validation embeddings to 2D and log a scatter figure to TensorBoard.
+    Embeddings are L2-normalized before projection.
+    """
+    log = logger or logging.getLogger("train_supcon")
+    if features is None or labels is None:
+        return False
+    if isinstance(features, torch.Tensor):
+        features = features.detach().cpu().float().numpy()
+    if isinstance(labels, torch.Tensor):
+        labels = labels.detach().cpu().long().numpy()
+    features = np.asarray(features, dtype=np.float32)
+    labels = np.asarray(labels, dtype=np.int64)
+    n = features.shape[0]
+    if n < 3:
+        log.warning("SupCon t-SNE scatter skipped: too few samples.")
+        return False
+    d = features.shape[1]
+    if d < 1:
+        log.warning("SupCon t-SNE scatter skipped: empty feature dimension.")
+        return False
+
+    features = features / np.clip(np.linalg.norm(features, axis=1, keepdims=True), a_min=1e-12, a_max=None)
+
+    if n > max_points:
+        rng = np.random.RandomState(random_state)
+        idx = rng.choice(n, size=max_points, replace=False)
+        features = features[idx]
+        labels = labels[idx]
+        n = max_points
+
+    perplexity = min(30, max(5, n // 10))
+    if perplexity >= n:
+        perplexity = max(2, n - 1)
+    coords = TSNE(
+        n_components=2,
+        random_state=random_state,
+        init="pca",
+        learning_rate="auto",
+        perplexity=perplexity,
+    ).fit_transform(features)
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    unique_labels = np.unique(labels)
+    for c in unique_labels:
+        mask = labels == c
+        name = class_names[int(c)] if class_names is not None and int(c) < len(class_names) else str(int(c))
+        ax.scatter(coords[mask, 0], coords[mask, 1], label=name, alpha=0.6, s=12)
+    ax.set_xlabel("t-SNE-1")
+    ax.set_ylabel("t-SNE-2")
+    ax.set_title("Validation embeddings (clean val, normalized, t-SNE)")
+    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8)
+    fig.tight_layout()
+    writer.add_figure(tag, fig, global_step)
+    plt.close(fig)
+    return True
+
+
+def validate_vanilla_supervised_contrastive(
+    model,
+    val_loader,
+    loss_fn,
+    device,
+    augmenter=None,
+    apply_augmentation_fn=None,
+    num_classes=None,
+    collect_embeddings=False,
+    max_embedding_samples=2048,
+):
+    """
+    Validation for `vanilla_supervised_contrastive`.
+
+    Uses clean validation inputs only (augmenter mode "no" when available, so FFT
+    and layout match training without stochastic augments). Loss is CE-only via
+    single-output `loss_fn(outputs_clean, labels)`. Accuracy is from clean logits.
+
+    When collect_embeddings is True, reuses the same forward for features
+    (at most max_embedding_samples points, subsampled if needed).
     """
     model.eval()
-    
-    # Tracking for combined loss
-    total_loss = 0.0
-    total_samples = 0
-    
-    # Initialize tracking for each exit
-    # We'll determine the number of exits from the first batch
-    exit_stats = None
-    final_stats = None
-    
+    val_loss = 0.0
+    val_correct = 0
+    val_total = 0
+    all_val_preds = []
+    all_val_labels = []
+    num_classes_from_outputs = None
+    emb_chunks = []
+    emb_label_chunks = []
+    embedding_collection_failed = False
+
     with torch.no_grad():
-        for batch_data in tqdm(val_loader, desc="Validation (Early Exits)", leave=False):
+        for batch_data in tqdm(val_loader, desc="Validation", leave=False):
             # Unpack batch
             if len(batch_data) == 3:
                 data, labels, idx = batch_data
             else:
                 data, labels = batch_data[0], batch_data[1]
-            
-            # Apply augmentation if provided (for frequency transformation)
+
             if augmenter is not None and apply_augmentation_fn is not None:
-                data, labels = apply_augmentation_fn(augmenter, data, labels)
-            
-            # Move to device
-            labels = labels.to(device)
-            if isinstance(data, dict):
-                for loc in data:
-                    for mod in data[loc]:
-                        data[loc][mod] = data[loc][mod].to(device)
+                clean_data_src = copy.deepcopy(data)
+                clean_labels_src = labels.clone() if isinstance(labels, torch.Tensor) else labels
+                prev_mode = getattr(augmenter, "augmentation_mode", "no")
+                augmenter.augmentation_mode = "no"
+                try:
+                    data_clean, labels_clean = apply_augmentation_fn(
+                        augmenter, clean_data_src, clean_labels_src
+                    )
+                finally:
+                    augmenter.augmentation_mode = prev_mode
             else:
-                data = data.to(device)
-            
-            # Forward pass
-            outputs = model(data)
-            
-            # Initialize stats on first batch
-            if exit_stats is None:
-                num_early_exits = len(outputs['exits'])
-                exit_stats = [
-                    {'loss': 0.0, 'correct': 0, 'total': 0, 'predictions': [], 'labels': []}
-                    for _ in range(num_early_exits)
-                ]
-                final_stats = {'loss': 0.0, 'correct': 0, 'total': 0, 'predictions': [], 'labels': []}
-            
-            # Handle one-hot labels
-            if len(labels.shape) == 2 and labels.shape[1] > 1:
-                loss_labels = torch.argmax(labels, dim=1)
+                data_clean, labels_clean = data, labels
+
+            labels_clean = labels_clean.to(device)
+            if len(labels_clean.shape) == 2 and labels_clean.shape[1] > 1:
+                loss_labels = torch.argmax(labels_clean, dim=1)
             else:
-                loss_labels = labels
-            
-            # Calculate total loss (for all exits combined)
-            batch_loss = loss_fn(outputs, loss_labels)
-            total_loss += batch_loss.item() * labels.size(0)
-            total_samples += labels.size(0)
-            
-            # Calculate individual cross-entropy loss for each exit
-            ce_loss_fn = nn.CrossEntropyLoss()
-            
-            # Process each early exit
-            for idx, exit_logits in enumerate(outputs['exits']):
-                exit_loss = ce_loss_fn(exit_logits, loss_labels)
-                predictions = torch.argmax(exit_logits, dim=1)
-                
-                exit_stats[idx]['loss'] += exit_loss.item() * labels.size(0)
-                exit_stats[idx]['correct'] += (predictions == loss_labels).sum().item()
-                exit_stats[idx]['total'] += labels.size(0)
-                exit_stats[idx]['predictions'].extend(predictions.cpu().numpy())
-                exit_stats[idx]['labels'].extend(loss_labels.cpu().numpy())
-            
-            # Process final exit
-            final_logits = outputs['logits']
-            final_loss = ce_loss_fn(final_logits, loss_labels)
-            predictions = torch.argmax(final_logits, dim=1)
-            
-            final_stats['loss'] += final_loss.item() * labels.size(0)
-            final_stats['correct'] += (predictions == loss_labels).sum().item()
-            final_stats['total'] += labels.size(0)
-            final_stats['predictions'].extend(predictions.cpu().numpy())
-            final_stats['labels'].extend(loss_labels.cpu().numpy())
-    
-    # Calculate average losses and accuracies
-    results = {
-        'total_loss': total_loss / total_samples,
-        'exits': [],
-        'final': {}
+                loss_labels = labels_clean
+
+            if isinstance(data_clean, dict):
+                for loc in data_clean:
+                    for mod in data_clean[loc]:
+                        data_clean[loc][mod] = data_clean[loc][mod].to(device)
+            else:
+                data_clean = data_clean.to(device)
+
+            outputs_clean = model(data_clean)
+            logits = (
+                outputs_clean["logits"]
+                if isinstance(outputs_clean, dict)
+                else outputs_clean
+            )
+            try:
+                num_classes_from_outputs = int(logits.shape[1])
+            except Exception:
+                pass
+
+            # Single-output path => CE only (see CrossEntropyPlusSupConLoss.forward)
+            loss = loss_fn(outputs_clean, loss_labels)
+
+            val_loss += loss.item() * loss_labels.size(0)
+            predictions = torch.argmax(logits, dim=1)
+            val_correct += (predictions == loss_labels).sum().item()
+            val_total += loss_labels.size(0)
+
+            all_val_preds.extend(predictions.cpu().numpy())
+            all_val_labels.extend(loss_labels.cpu().numpy())
+
+            if collect_embeddings and not embedding_collection_failed:
+                if isinstance(outputs_clean, dict) and "features" in outputs_clean:
+                    f_clean = outputs_clean["features"]
+                    emb_chunks.append(f_clean.detach().cpu().float().numpy())
+                    emb_label_chunks.append(loss_labels.detach().cpu().long().numpy())
+                else:
+                    embedding_collection_failed = True
+
+    epoch_val_loss = val_loss / val_total
+    epoch_val_acc = val_correct / val_total
+
+    # Confusion-matrix-derived metrics
+    inferred_num_classes = num_classes
+    if inferred_num_classes is None:
+        if num_classes_from_outputs is not None:
+            inferred_num_classes = num_classes_from_outputs
+        elif len(all_val_preds) > 0 and len(all_val_labels) > 0:
+            inferred_num_classes = int(max(np.max(all_val_preds), np.max(all_val_labels)) + 1)
+
+    cm = None
+    f1_macro = None
+    if inferred_num_classes is not None and inferred_num_classes > 0 and len(all_val_preds) > 0:
+        cm = calculate_confusion_matrix(all_val_preds, all_val_labels, inferred_num_classes)
+        f1_macro = calculate_macro_f1_from_confusion_matrix(cm)
+
+    embedding_features = None
+    embedding_labels = None
+    if collect_embeddings and not embedding_collection_failed and emb_chunks:
+        embedding_features = np.concatenate(emb_chunks, axis=0)
+        embedding_labels = np.concatenate(emb_label_chunks, axis=0)
+        total_emb = embedding_features.shape[0]
+        if total_emb > max_embedding_samples:
+            rng = np.random.RandomState(0)
+            idx = rng.choice(total_emb, size=max_embedding_samples, replace=False)
+            embedding_features = embedding_features[idx]
+            embedding_labels = embedding_labels[idx]
+
+    return {
+        "loss": epoch_val_loss,
+        "accuracy": epoch_val_acc,
+        "f1_macro": f1_macro,
+        "confusion_matrix": cm,
+        "predictions": all_val_preds,
+        "labels": all_val_labels,
+        "embedding_features": embedding_features,
+        "embedding_labels": embedding_labels,
     }
-    
-    # Format exit stats
-    for stats in exit_stats:
-        results['exits'].append({
-            'loss': stats['loss'] / stats['total'],
-            'accuracy': stats['correct'] / stats['total'],
-            'predictions': stats['predictions'],
-            'labels': stats['labels']
-        })
-    
-    # Format final stats
-    results['final'] = {
-        'loss': final_stats['loss'] / final_stats['total'],
-        'accuracy': final_stats['correct'] / final_stats['total'],
-        'predictions': final_stats['predictions'],
-        'labels': final_stats['labels']
-    }
-    
-    return results
-
-
-def log_early_exits_to_tensorboard(writer, epoch, train_results, val_results, 
-                                    num_classes, class_names=None, memory_info=None, 
-                                    input_memory_info=None, test=False):
-    """
-    Log early exit metrics to TensorBoard.
-    
-    For training (test=False):
-    - Creates time-series plots for loss and accuracy per exit
-    - Logs confusion matrices every 5 epochs or last epoch
-    - Logs memory requirements as text (once at epoch 0)
-    
-    For testing (test=True):
-    - Logs all metrics as text (single evaluation, no time-series)
-    - Logs confusion matrices as figures
-    - Logs memory requirements as text
-    
-    Args:
-        writer: TensorBoard SummaryWriter
-        epoch: Current epoch number
-        train_results: Training results dict with 'exits' and 'final' keys (can be None if test=True)
-        val_results: Validation/test results dict from validate_with_early_exits()
-        num_classes: Number of classes
-        class_names: List of class names (optional)
-        memory_info: Dict from get_early_exit_memory() with memory requirements (optional)
-        input_memory_info: Dict from get_input_memory() with input memory info (optional)
-        test: If True, log all metrics as text (single evaluation). 
-              If False, log time-series metrics as scalars (training).
-    """
-    num_exits = len(val_results['exits'])
-    
-    # --- Memory logging (always as text, not plots) ---
-    if input_memory_info and epoch == 0:
-        memory_text = "## Input Memory\n\n"
-        for info in input_memory_info['shape_info']:
-            input_name = f"{info['location']}_{info['modality']}"
-            memory_text += f"- {input_name}: {info['memory']:.2f} KB\n"
-        memory_text += f"\n**Total**: {input_memory_info['total_memory']:.2f} KB\n"
-        writer.add_text('Memory/Input', memory_text, 0)
-    
-    if memory_info and epoch == 0:
-        mem_text = "## Model Memory Requirements\n\n"
-        if memory_info['has_early_exits']:
-            for exit_idx in range(num_exits):
-                exit_mem = memory_info['exits'][exit_idx]
-                mem_text += f"### Exit {exit_idx + 1}\n"
-                mem_text += f"- Parameters: {exit_mem['parameter_memory']:.2f} KB\n"
-                mem_text += f"- Activations: {exit_mem['activation_memory']:.2f} KB\n"
-                mem_text += f"- Total: {exit_mem['total_memory']:.2f} KB\n\n"
-        
-        final_mem = memory_info['final']
-        mem_text += f"### Final Exit\n"
-        mem_text += f"- Parameters: {final_mem['parameter_memory']:.2f} KB\n"
-        mem_text += f"- Activations: {final_mem['activation_memory']:.2f} KB\n"
-        mem_text += f"- Total: {final_mem['total_memory']:.2f} KB\n"
-        writer.add_text('Memory/Model', mem_text, 0)
-    
-    # --- Test mode: log everything as text ---
-    if test:
-        results_text = "## Test Results\n\n"
-        
-        for exit_idx in range(num_exits):
-            exit_num = exit_idx + 1
-            val_exit = val_results['exits'][exit_idx]
-            results_text += f"### Exit {exit_num}\n"
-            results_text += f"- Loss: {val_exit['loss']:.4f}\n"
-            results_text += f"- Accuracy: {val_exit['accuracy']:.4f}\n\n"
-        
-        val_final = val_results['final']
-        results_text += f"### Final Exit\n"
-        results_text += f"- Loss: {val_final['loss']:.4f}\n"
-        results_text += f"- Accuracy: {val_final['accuracy']:.4f}\n\n"
-        results_text += f"### Total\n"
-        results_text += f"- Loss: {val_results['total_loss']:.4f}\n"
-        
-        writer.add_text('Test_Results', results_text, 0)
-        
-        # Log confusion matrices for test
-        for exit_idx in range(num_exits):
-            exit_num = exit_idx + 1
-            val_exit = val_results['exits'][exit_idx]
-            val_cm = calculate_confusion_matrix(
-                val_exit['predictions'], val_exit['labels'], num_classes
-            )
-            val_cm_fig = plot_confusion_matrix(val_cm, class_names=class_names, normalize=True)
-            writer.add_figure(f'Confusion_Matrix_Exit{exit_num}/test', val_cm_fig, 0)
-            plt.close(val_cm_fig)
-        
-        val_final = val_results['final']
-        val_cm = calculate_confusion_matrix(
-            val_final['predictions'], val_final['labels'], num_classes
-        )
-        val_cm_fig = plot_confusion_matrix(val_cm, class_names=class_names, normalize=True)
-        writer.add_figure('Confusion_Matrix_Final/test', val_cm_fig, 0)
-        plt.close(val_cm_fig)
-        
-        return  # Exit early for test mode
-    
-    # --- Training mode: log time-series as scalars ---
-    
-    # Log metrics for each early exit
-    for exit_idx in range(num_exits):
-        exit_num = exit_idx + 1
-        train_exit = train_results['exits'][exit_idx]
-        val_exit = val_results['exits'][exit_idx]
-        
-        # Loss
-        writer.add_scalar(f'Loss_Exit{exit_num}/train', train_exit['loss'], epoch)
-        writer.add_scalar(f'Loss_Exit{exit_num}/val', val_exit['loss'], epoch)
-        
-        # Accuracy
-        writer.add_scalar(f'Accuracy_Exit{exit_num}/train', train_exit['accuracy'], epoch)
-        writer.add_scalar(f'Accuracy_Exit{exit_num}/val', val_exit['accuracy'], epoch)
-        
-        # Confusion matrices (every 5 epochs or last epoch)
-        if (epoch + 1) % 5 == 0 or epoch == train_results.get('total_epochs', epoch + 1) - 1:
-            # Training confusion matrix
-            train_cm = calculate_confusion_matrix(
-                train_exit['predictions'], 
-                train_exit['labels'], 
-                num_classes
-            )
-            train_cm_fig = plot_confusion_matrix(train_cm, class_names=class_names, normalize=True)
-            writer.add_figure(f'Confusion_Matrix_Exit{exit_num}/train', train_cm_fig, epoch)
-            plt.close(train_cm_fig)
-            
-            # Validation confusion matrix
-            val_cm = calculate_confusion_matrix(
-                val_exit['predictions'], 
-                val_exit['labels'], 
-                num_classes
-            )
-            val_cm_fig = plot_confusion_matrix(val_cm, class_names=class_names, normalize=True)
-            writer.add_figure(f'Confusion_Matrix_Exit{exit_num}/val', val_cm_fig, epoch)
-            plt.close(val_cm_fig)
-    
-    # Log metrics for final exit
-    train_final = train_results['final']
-    val_final = val_results['final']
-    
-    writer.add_scalar('Loss_Final/train', train_final['loss'], epoch)
-    writer.add_scalar('Loss_Final/val', val_final['loss'], epoch)
-    writer.add_scalar('Accuracy_Final/train', train_final['accuracy'], epoch)
-    writer.add_scalar('Accuracy_Final/val', val_final['accuracy'], epoch)
-    
-    # Final confusion matrices (every 5 epochs or last epoch)
-    if (epoch + 1) % 5 == 0 or epoch == train_results.get('total_epochs', epoch + 1) - 1:
-        # Training confusion matrix
-        train_cm = calculate_confusion_matrix(
-            train_final['predictions'], 
-            train_final['labels'], 
-            num_classes
-        )
-        train_cm_fig = plot_confusion_matrix(train_cm, class_names=class_names, normalize=True)
-        writer.add_figure('Confusion_Matrix_Final/train', train_cm_fig, epoch)
-        plt.close(train_cm_fig)
-        
-        # Validation confusion matrix
-        val_cm = calculate_confusion_matrix(
-            val_final['predictions'], 
-            val_final['labels'], 
-            num_classes
-        )
-        val_cm_fig = plot_confusion_matrix(val_cm, class_names=class_names, normalize=True)
-        writer.add_figure('Confusion_Matrix_Final/val', val_cm_fig, epoch)
-        plt.close(val_cm_fig)
-    
-    # Log combined total loss
-    writer.add_scalar('Loss_Total/train', train_results['total_loss'], epoch)
-    writer.add_scalar('Loss_Total/val', val_results['total_loss'], epoch)
-
-# def log_early_exits_to_tensorboard(writer, epoch, train_results, val_results, 
-#                                     num_classes, class_names=None, memory_info=None, input_memory_info=None):
-#     """
-#     Log early exit metrics to TensorBoard.
-    
-#     Creates separate charts for each exit (including final) to track:
-#     - Training and validation loss
-#     - Training and validation accuracy
-#     - Confusion matrices (logged every 5 epochs or last epoch)
-#     - Memory requirements (if provided, logged once at epoch 0)
-#     - Input data memory (if provided, logged once at epoch 0)
-    
-#     Args:
-#         writer: TensorBoard SummaryWriter
-#         epoch: Current epoch number
-#         train_results: Training results dict with 'exits' and 'final' keys
-#         val_results: Validation results dict from validate_with_early_exits()
-#         num_classes: Number of classes
-#         class_names: List of class names (optional)
-#         memory_info: Dict from get_early_exit_memory() with memory requirements (optional)
-#         input_memory_info: Dict from get_input_memory() with input memory info (optional)
-#     """
-#     num_exits = len(train_results['exits'])
-    
-#     # Log input memory (logged once at epoch 0)
-#     if input_memory_info and epoch == 0:
-#         for info in input_memory_info['shape_info']:
-#             # Create a friendly name for the input
-#             input_name = f"{info['location']}_{info['modality']}"
-#             writer.add_scalar(f'Input_Memory_KB/{input_name}', info['memory'], 0)
-#         writer.add_scalar('Input_Memory_KB/total', input_memory_info['total_memory'], 0)
-    
-#     # Log metrics for each early exit
-#     for exit_idx in range(num_exits):
-#         exit_num = exit_idx + 1
-#         train_exit = train_results['exits'][exit_idx]
-#         val_exit = val_results['exits'][exit_idx]
-        
-#         # Loss
-#         writer.add_scalar(f'Loss_Exit{exit_num}/train', train_exit['loss'], epoch)
-#         writer.add_scalar(f'Loss_Exit{exit_num}/val', val_exit['loss'], epoch)
-        
-#         # Accuracy
-#         writer.add_scalar(f'Accuracy_Exit{exit_num}/train', train_exit['accuracy'], epoch)
-#         writer.add_scalar(f'Accuracy_Exit{exit_num}/val', val_exit['accuracy'], epoch)
-        
-#         # Memory (logged once at epoch 0)
-#         if memory_info and memory_info['has_early_exits'] and epoch == 0:
-#             exit_mem = memory_info['exits'][exit_idx]
-#             writer.add_scalar(f'Memory_KB_Exit{exit_num}/parameters', 
-#                             exit_mem['parameter_memory'], 0)
-#             writer.add_scalar(f'Memory_KB_Exit{exit_num}/activations', 
-#                             exit_mem['activation_memory'], 0)
-#             writer.add_scalar(f'Memory_KB_Exit{exit_num}/total', 
-#                             exit_mem['total_memory'], 0)
-        
-#         # Confusion matrices (every 5 epochs or last epoch)
-#         if (epoch + 1) % 5 == 0 or epoch == train_results.get('total_epochs', epoch + 1) - 1:
-#             # Training confusion matrix
-#             train_cm = calculate_confusion_matrix(
-#                 train_exit['predictions'], 
-#                 train_exit['labels'], 
-#                 num_classes
-#             )
-#             train_cm_fig = plot_confusion_matrix(train_cm, class_names=class_names, normalize=True)
-#             writer.add_figure(f'Confusion_Matrix_Exit{exit_num}/train', train_cm_fig, epoch)
-#             plt.close(train_cm_fig)
-            
-#             # Validation confusion matrix
-#             val_cm = calculate_confusion_matrix(
-#                 val_exit['predictions'], 
-#                 val_exit['labels'], 
-#                 num_classes
-#             )
-#             val_cm_fig = plot_confusion_matrix(val_cm, class_names=class_names, normalize=True)
-#             writer.add_figure(f'Confusion_Matrix_Exit{exit_num}/val', val_cm_fig, epoch)
-#             plt.close(val_cm_fig)
-    
-#     # Log metrics for final exit
-#     train_final = train_results['final']
-#     val_final = val_results['final']
-    
-#     writer.add_scalar('Loss_Final/train', train_final['loss'], epoch)
-#     writer.add_scalar('Loss_Final/val', val_final['loss'], epoch)
-#     writer.add_scalar('Accuracy_Final/train', train_final['accuracy'], epoch)
-#     writer.add_scalar('Accuracy_Final/val', val_final['accuracy'], epoch)
-    
-#     # Memory for final exit (logged once at epoch 0)
-#     if memory_info and epoch == 0:
-#         final_mem = memory_info['final']
-#         writer.add_scalar('Memory_KB_Final/parameters', final_mem['parameter_memory'], 0)
-#         writer.add_scalar('Memory_KB_Final/activations', final_mem['activation_memory'], 0)
-#         writer.add_scalar('Memory_KB_Final/total', final_mem['total_memory'], 0)
-    
-#     # Final confusion matrices (every 5 epochs or last epoch)
-#     if (epoch + 1) % 5 == 0 or epoch == train_results.get('total_epochs', epoch + 1) - 1:
-#         # Training confusion matrix
-#         train_cm = calculate_confusion_matrix(
-#             train_final['predictions'], 
-#             train_final['labels'], 
-#             num_classes
-#         )
-#         train_cm_fig = plot_confusion_matrix(train_cm, class_names=class_names, normalize=True)
-#         writer.add_figure('Confusion_Matrix_Final/train', train_cm_fig, epoch)
-#         plt.close(train_cm_fig)
-        
-#         # Validation confusion matrix
-#         val_cm = calculate_confusion_matrix(
-#             val_final['predictions'], 
-#             val_final['labels'], 
-#             num_classes
-#         )
-#         val_cm_fig = plot_confusion_matrix(val_cm, class_names=class_names, normalize=True)
-#         writer.add_figure('Confusion_Matrix_Final/val', val_cm_fig, epoch)
-#         plt.close(val_cm_fig)
-    
-#     # Log combined total loss
-#     writer.add_scalar('Loss_Total/train', train_results['total_loss'], epoch)
-#     writer.add_scalar('Loss_Total/val', val_results['total_loss'], epoch)
 
 
 # ============================================================================
@@ -927,6 +1089,15 @@ def train(model, train_loader, val_loader, config, experiment_dir,
     # Setup loss function
     if loss_fn is None:
         raise ValueError("loss_fn is required - must be passed explicitly")
+
+    # ---------------------------------------------------------------------
+    # Peak RAM tracking (CPU RSS + optional CUDA peak)
+    # ---------------------------------------------------------------------
+    rss_kb_start = _get_process_peak_rss_kb()
+    peak_rss_kb = rss_kb_start
+    if device.type == "cuda":
+        # Track CUDA peaks during the run (separate from system RAM).
+        torch.cuda.reset_peak_memory_stats(device=device)
     
     # Setup directories
     experiment_path = Path(experiment_dir)
@@ -962,7 +1133,8 @@ def train(model, train_loader, val_loader, config, experiment_dir,
     # Best model tracking
     best_val_acc = 0.0
     best_epoch = 0
-    
+    best_val_cm = None
+
     logger.info("=" * 80)
     logger.info("Starting Training")
     logger.info(f"Device: {device}")
@@ -1003,6 +1175,12 @@ def train(model, train_loader, val_loader, config, experiment_dir,
             else:
                 data = data.to(device)
             
+            # Log input shape once (single-modality models still receive dict input).
+            if epoch == 0 and batch_idx == 0:
+                _log_single_modality_input_shape(
+                    model, data, logger, epoch=epoch, batch_idx=batch_idx
+                )
+            
             # Forward pass
             optimizer.zero_grad()
             outputs = model(data)
@@ -1024,6 +1202,12 @@ def train(model, train_loader, val_loader, config, experiment_dir,
                 torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
             
             optimizer.step()
+            
+            # Update peak RSS (ru_maxrss is already a peak, but we keep an
+            # explicit max for clear end-of-run logging).
+            rss_kb_now = _get_process_peak_rss_kb()
+            if rss_kb_now > peak_rss_kb:
+                peak_rss_kb = rss_kb_now
             
             # Metrics
             train_loss += loss.item() * labels.size(0)
@@ -1116,6 +1300,7 @@ def train(model, train_loader, val_loader, config, experiment_dir,
         if epoch_val_acc > best_val_acc:
             best_val_acc = epoch_val_acc
             best_epoch = epoch
+            best_val_cm = calculate_confusion_matrix(all_val_preds, all_val_labels, num_classes)
             best_model_path = models_dir / "best_model.pth"
             torch.save({
                 'epoch': epoch,
@@ -1145,306 +1330,333 @@ def train(model, train_loader, val_loader, config, experiment_dir,
     logger.info(f"Models saved to: {models_dir}")
     logger.info(f"TensorBoard logs: {tensorboard_dir}")
     logger.info("=" * 80)
-    
+
+    if best_val_cm is not None:
+        log_confusion_matrix_table(
+            best_val_cm,
+            class_names,
+            logger,
+            title=f"Best Validation Confusion Matrix  (epoch {best_epoch + 1}  |  val_acc={best_val_acc:.4f})",
+        )
+
     writer.close()
+
+    # ---------------------------------------------------------------------
+    # Final peak RAM logging
+    # ---------------------------------------------------------------------
+    rss_kb_end = _get_process_peak_rss_kb()
+    peak_rss_mb = peak_rss_kb / 1024.0
+    rss_delta_mb = (rss_kb_end - rss_kb_start) / 1024.0
+    logger.info(
+        f"Peak CPU RSS (ru_maxrss): {peak_rss_mb:.2f} MB (delta since start: {rss_delta_mb:.2f} MB)"
+    )
+    if device.type == "cuda":
+        cuda_peak_alloc_mb = torch.cuda.max_memory_allocated(device=device) / (1024 * 1024)
+        cuda_peak_reserved_mb = torch.cuda.max_memory_reserved(device=device) / (1024 * 1024)
+        logger.info(
+            f"Peak CUDA memory: allocated={cuda_peak_alloc_mb:.2f} MB, reserved={cuda_peak_reserved_mb:.2f} MB"
+        )
     
     # Return model, history, and best checkpoint path
     best_checkpoint_path = str(models_dir / "best_model.pth")
     return model, train_history, best_checkpoint_path
 
 
-def train_with_early_exits(model, train_loader, val_loader, config, experiment_dir,
-                           loss_fn, optimizer, scheduler, num_epochs,
-                           augmenter=None, apply_augmentation_fn=None):
+def train_vanilla_supervised_contrastive(
+    model,
+    train_loader,
+    val_loader,
+    config,
+    experiment_dir,
+    loss_fn,
+    optimizer,
+    scheduler,
+    num_epochs,
+    val_fn=None,
+    augmenter=None,
+    apply_augmentation_fn=None,
+):
     """
-    Train model with early exits, tracking metrics for each exit separately.
-    
-    Args:
-        model: PyTorch model with early exits
-        train_loader: Training data loader
-        val_loader: Validation data loader
-        config: Configuration dictionary
-        experiment_dir: Path to experiment directory
-        loss_fn: Early exit loss function (REQUIRED)
-        optimizer: Pre-configured optimizer (REQUIRED)
-        scheduler: Pre-configured scheduler (REQUIRED)
-        num_epochs: Number of training epochs (REQUIRED)
-        augmenter: Data augmenter object (optional)
-        apply_augmentation_fn: Function to apply augmentation (optional)
-    
-    Returns:
-        model: Trained model
-        train_history: Dictionary with training history for all exits
-        best_checkpoint_path: Path to best model checkpoint
+    Two-view supervised contrastive training.
+
+    For each batch:
+      - create two independent augmented views (view1, view2)
+      - forward pass both views
+      - compute CE + SupCon loss via `loss_fn((out1, out2), labels)`
+      - use averaged logits from the two views for accuracy/confusion matrix
     """
-    device = torch.device(config.get('device', 'cuda:0') if torch.cuda.is_available() else 'cpu')
+    device = torch.device(config.get("device", "cuda:0") if torch.cuda.is_available() else "cpu")
     model = model.to(device)
-    
+
     if loss_fn is None:
         raise ValueError("loss_fn is required - must be passed explicitly")
-    
-    # Setup directories
+
+    # ---------------------------------------------------------------------
+    # Peak RAM tracking (CPU RSS + optional CUDA peak)
+    # ---------------------------------------------------------------------
+    rss_kb_start = _get_process_peak_rss_kb()
+    peak_rss_kb = rss_kb_start
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device=device)
+
     experiment_path = Path(experiment_dir)
     logs_dir = experiment_path / "logs"
     models_dir = experiment_path / "models"
     tensorboard_dir = experiment_path / "tensorboard"
-    
+
     # Setup logging
-    log_file = logs_dir / "train_early_exits.log"
+    log_file = logs_dir / "train.log"
     file_handler = logging.FileHandler(log_file)
     file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    logger = logging.getLogger('train_early_exits')
+    file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    logger = logging.getLogger("train_supcon")
     logger.addHandler(file_handler)
     logger.setLevel(logging.INFO)
-    
+
     # Setup TensorBoard
     writer = SummaryWriter(str(tensorboard_dir))
-    
-    # Training parameters
-    num_classes = config['vehicle_classification']['num_classes']
-    class_names = config['vehicle_classification']['class_names']
-    
-    # Training history
+
+    num_classes = config["vehicle_classification"]["num_classes"]
+    class_names = config["vehicle_classification"]["class_names"]
+
     train_history = {
-        'train_loss': [],
-        'val_loss': [],
-        'learning_rates': []
+        "train_loss": [],
+        "train_acc": [],
+        "val_loss": [],
+        "val_acc": [],
+        "learning_rates": [],
     }
-    
-    # Best model tracking (based on final exit accuracy)
+
     best_val_acc = 0.0
     best_epoch = 0
-    
+    best_val_cm = None
+
     logger.info("=" * 80)
-    logger.info("Starting Training with Early Exits")
+    logger.info("Starting Training (vanilla_supervised_contrastive)")
     logger.info(f"Device: {device}")
     logger.info(f"Number of epochs: {num_epochs}")
     logger.info(f"Number of classes: {num_classes}")
     logger.info(f"Experiment directory: {experiment_dir}")
     logger.info("=" * 80)
-    
-    # ========================================================================
-    # Calculate Memory Requirements (before training)
-    # ========================================================================
-    logger.info("\nCalculating per-exit memory requirements...")
-    from models.create_models import get_early_exit_memory, log_memory_info, get_input_memory
-    
-    # Grab one batch and apply augmentation to get actual input format
-    sample_batch_data = next(iter(train_loader))
-    if len(sample_batch_data) == 3:
-        sample_data, sample_labels, _ = sample_batch_data
-    else:
-        sample_data, sample_labels = sample_batch_data[0], sample_batch_data[1]
-    
-    # Apply augmentation to get the actual data format that goes to the model
-    if augmenter is not None and apply_augmentation_fn is not None:
-        sample_data, _ = apply_augmentation_fn(augmenter, sample_data, sample_labels)
-    
-    # Calculate input memory
-    input_memory_info = get_input_memory(sample_data, unit='KB')
-    
-    # Calculate memory for each exit
-    memory_info = get_early_exit_memory(model, sample_data, unit='KB')
-    
-    # Log memory info to console/file (including input info)
-    log_memory_info(memory_info, input_memory_info=input_memory_info, logger=logger)
-    logger.info("")
-    
+
     for epoch in range(num_epochs):
-        # ====================================================================
-        # Training Phase
-        # ====================================================================
         model.train()
-        
-        # Initialize tracking for exits
-        train_exit_stats = None
-        train_final_stats = None
-        train_total_loss = 0.0
-        train_total_samples = 0
-        
-        for batch_idx, batch_data in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]", leave=False)):
+        train_loss = 0.0
+        train_correct = 0
+        train_total = 0
+        all_train_preds = []
+        all_train_labels = []
+
+        for batch_idx, batch_data in enumerate(
+            tqdm(
+                train_loader,
+                desc=f"Epoch {epoch+1}/{num_epochs} [Train SupCon]",
+                leave=False,
+            )
+        ):
             # Unpack batch
             if len(batch_data) == 3:
                 data, labels, idx = batch_data
             else:
                 data, labels = batch_data[0], batch_data[1]
-            
-            # Apply augmentation if provided
+
+            # Two augmented views
             if augmenter is not None and apply_augmentation_fn is not None:
-                data, labels = apply_augmentation_fn(augmenter, data, labels)
-            
-            # Move to device
-            labels = labels.to(device)
-            if isinstance(data, dict):
-                for loc in data:
-                    for mod in data[loc]:
-                        data[loc][mod] = data[loc][mod].to(device)
+                data_view1, labels_view1 = apply_augmentation_fn(augmenter, data, labels)
+                data_view2, labels_view2 = apply_augmentation_fn(augmenter, data, labels)
             else:
-                data = data.to(device)
-            
-            # Forward pass
+                data_view1, data_view2 = data, data
+                labels_view1, labels_view2 = labels, labels
+
+            labels_view1 = labels_view1.to(device)
+            if len(labels_view1.shape) == 2 and labels_view1.shape[1] > 1:
+                loss_labels = torch.argmax(labels_view1, dim=1)
+            else:
+                loss_labels = labels_view1
+
+            # Move both views to device
+            if isinstance(data_view1, dict):
+                for loc in data_view1:
+                    for mod in data_view1[loc]:
+                        data_view1[loc][mod] = data_view1[loc][mod].to(device)
+            else:
+                data_view1 = data_view1.to(device)
+
+            if isinstance(data_view2, dict):
+                for loc in data_view2:
+                    for mod in data_view2[loc]:
+                        data_view2[loc][mod] = data_view2[loc][mod].to(device)
+            else:
+                data_view2 = data_view2.to(device)
+
+            # Log input shape once (view1 is sufficient since the two views share shape).
+            if epoch == 0 and batch_idx == 0:
+                _log_single_modality_input_shape(
+                    model, data_view1, logger, epoch=epoch, batch_idx=batch_idx
+                )
+
             optimizer.zero_grad()
-            outputs = model(data)
-            
-            # Initialize stats on first batch
-            if train_exit_stats is None:
-                num_early_exits = len(outputs['exits'])
-                train_exit_stats = [
-                    {'loss': 0.0, 'correct': 0, 'total': 0, 'predictions': [], 'labels': []}
-                    for _ in range(num_early_exits)
-                ]
-                train_final_stats = {'loss': 0.0, 'correct': 0, 'total': 0, 'predictions': [], 'labels': []}
-            
-            # Handle one-hot labels
-            if len(labels.shape) == 2 and labels.shape[1] > 1:
-                loss_labels = torch.argmax(labels, dim=1)
-            else:
-                loss_labels = labels
-            
-            # Calculate combined loss
-            loss = loss_fn(outputs, loss_labels)
-            
-            # Backward pass
+
+            outputs_view1 = model(data_view1)
+            outputs_view2 = model(data_view2)
+
+            loss = loss_fn((outputs_view1, outputs_view2), loss_labels)
             loss.backward()
+
+            clip_grad = config.get(config.get("model", "ResNet"), {}).get("optimizer", {}).get("clip_grad", None)
+            if clip_grad:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+
             optimizer.step()
-            
-            # Track total loss
-            train_total_loss += loss.item() * labels.size(0)
-            train_total_samples += labels.size(0)
-            
-            # Calculate individual metrics for each exit (for tracking only, not used in backprop)
-            ce_loss_fn = nn.CrossEntropyLoss()
-            
-            with torch.no_grad():
-                # Process each early exit
-                for idx, exit_logits in enumerate(outputs['exits']):
-                    exit_loss = ce_loss_fn(exit_logits, loss_labels)
-                    predictions = torch.argmax(exit_logits, dim=1)
-                    
-                    train_exit_stats[idx]['loss'] += exit_loss.item() * labels.size(0)
-                    train_exit_stats[idx]['correct'] += (predictions == loss_labels).sum().item()
-                    train_exit_stats[idx]['total'] += labels.size(0)
-                    train_exit_stats[idx]['predictions'].extend(predictions.cpu().numpy())
-                    train_exit_stats[idx]['labels'].extend(loss_labels.cpu().numpy())
-                
-                # Process final exit
-                final_logits = outputs['logits']
-                final_loss = ce_loss_fn(final_logits, loss_labels)
-                predictions = torch.argmax(final_logits, dim=1)
-                
-                train_final_stats['loss'] += final_loss.item() * labels.size(0)
-                train_final_stats['correct'] += (predictions == loss_labels).sum().item()
-                train_final_stats['total'] += labels.size(0)
-                train_final_stats['predictions'].extend(predictions.cpu().numpy())
-                train_final_stats['labels'].extend(loss_labels.cpu().numpy())
-        
-        # Calculate epoch training metrics
-        train_results = {
-            'total_loss': train_total_loss / train_total_samples,
-            'exits': [],
-            'final': {},
-            'total_epochs': num_epochs
-        }
-        
-        for stats in train_exit_stats:
-            train_results['exits'].append({
-                'loss': stats['loss'] / stats['total'],
-                'accuracy': stats['correct'] / stats['total'],
-                'predictions': stats['predictions'],
-                'labels': stats['labels']
-            })
-        
-        train_results['final'] = {
-            'loss': train_final_stats['loss'] / train_final_stats['total'],
-            'accuracy': train_final_stats['correct'] / train_final_stats['total'],
-            'predictions': train_final_stats['predictions'],
-            'labels': train_final_stats['labels']
-        }
-        
-        train_history['train_loss'].append(train_results['total_loss'])
-        
-        # ====================================================================
+
+            rss_kb_now = _get_process_peak_rss_kb()
+            if rss_kb_now > peak_rss_kb:
+                peak_rss_kb = rss_kb_now
+
+            train_loss += loss.item() * loss_labels.size(0)
+
+            logits1 = outputs_view1["logits"] if isinstance(outputs_view1, dict) else outputs_view1
+            logits2 = outputs_view2["logits"] if isinstance(outputs_view2, dict) else outputs_view2
+            logits_avg = 0.5 * (logits1 + logits2)
+            predictions = torch.argmax(logits_avg, dim=1)
+
+            train_correct += (predictions == loss_labels).sum().item()
+            train_total += loss_labels.size(0)
+
+            all_train_preds.extend(predictions.cpu().numpy())
+            all_train_labels.extend(loss_labels.cpu().numpy())
+
+        epoch_train_loss = train_loss / train_total
+        epoch_train_acc = train_correct / train_total
+
+        train_history["train_loss"].append(epoch_train_loss)
+        train_history["train_acc"].append(epoch_train_acc)
+
         # Validation Phase
-        # ====================================================================
-        val_results = validate_with_early_exits(
-            model, val_loader, loss_fn, device, num_classes, 
-            augmenter=augmenter, apply_augmentation_fn=apply_augmentation_fn
-        )
-        train_history['val_loss'].append(val_results['total_loss'])
-        
-        # Learning rate
-        current_lr = optimizer.param_groups[0]['lr']
-        train_history['learning_rates'].append(current_lr)
-        
-        # Update scheduler
+        log_embedding_epoch = (epoch + 1) % 5 == 0 or epoch == num_epochs - 1
+        if val_fn is not None:
+            val_results = val_fn(model, val_loader, loss_fn, device, config)
+        else:
+            val_results = validate_vanilla_supervised_contrastive(
+                model,
+                val_loader,
+                loss_fn,
+                device,
+                augmenter=augmenter,
+                apply_augmentation_fn=apply_augmentation_fn,
+                num_classes=num_classes,
+                collect_embeddings=log_embedding_epoch,
+                max_embedding_samples=2048,
+            )
+
+        epoch_val_loss = val_results["loss"]
+        epoch_val_acc = val_results["accuracy"]
+        all_val_preds = val_results["predictions"]
+        all_val_labels = val_results["labels"]
+
+        train_history["val_loss"].append(epoch_val_loss)
+        train_history["val_acc"].append(epoch_val_acc)
+
+        current_lr = optimizer.param_groups[0]["lr"]
+        train_history["learning_rates"].append(current_lr)
+
         if scheduler is not None:
             scheduler.step()
-        
-        # ====================================================================
-        # Logging
-        # ====================================================================
-        logger.info(f"\nEpoch [{epoch+1}/{num_epochs}]")
-        logger.info(f"  Total Train Loss: {train_results['total_loss']:.4f}")
-        logger.info(f"  Total Val Loss: {val_results['total_loss']:.4f}")
+
+        logger.info(f"Epoch [{epoch+1}/{num_epochs}]")
+        logger.info(f"  Train Loss: {epoch_train_loss:.4f}, Train Acc: {epoch_train_acc:.4f}")
+        logger.info(f"  Val Loss: {epoch_val_loss:.4f}, Val Acc: {epoch_val_acc:.4f}")
         logger.info(f"  Learning Rate: {current_lr:.6f}")
-        
-        # Log each exit
-        for exit_idx in range(len(train_results['exits'])):
-            logger.info(f"  Exit {exit_idx+1} - Train Acc: {train_results['exits'][exit_idx]['accuracy']:.4f}, "
-                       f"Val Acc: {val_results['exits'][exit_idx]['accuracy']:.4f}")
-        
-        logger.info(f"  Final Exit - Train Acc: {train_results['final']['accuracy']:.4f}, "
-                   f"Val Acc: {val_results['final']['accuracy']:.4f}")
-        
-        # TensorBoard logging
-        log_early_exits_to_tensorboard(writer, epoch, train_results, val_results, num_classes, class_names, memory_info=memory_info, input_memory_info=input_memory_info)
-        writer.add_scalar('Learning_Rate', current_lr, epoch)
-        
-        # ====================================================================
-        # Save Checkpoints (based on final exit accuracy)
-        # ====================================================================
-        epoch_val_acc = val_results['final']['accuracy']
-        
+
+        writer.add_scalar("Loss/train", epoch_train_loss, epoch)
+        writer.add_scalar("Loss/val", epoch_val_loss, epoch)
+        writer.add_scalar("Accuracy/train", epoch_train_acc, epoch)
+        writer.add_scalar("Accuracy/val", epoch_val_acc, epoch)
+        writer.add_scalar("Learning_Rate", current_lr, epoch)
+
+        if (epoch + 1) % 5 == 0 or epoch == num_epochs - 1:
+            train_cm = calculate_confusion_matrix(all_train_preds, all_train_labels, num_classes)
+            train_cm_fig = plot_confusion_matrix(train_cm, class_names=class_names, normalize=True)
+            writer.add_figure("Confusion_Matrix/train", train_cm_fig, epoch)
+            plt.close(train_cm_fig)
+
+            val_cm = calculate_confusion_matrix(all_val_preds, all_val_labels, num_classes)
+            val_cm_fig = plot_confusion_matrix(val_cm, class_names=class_names, normalize=True)
+            writer.add_figure("Confusion_Matrix/val", val_cm_fig, epoch)
+            plt.close(val_cm_fig)
+
+            logger.info("  Confusion matrices logged to TensorBoard")
+
+            emb_f = val_results.get("embedding_features")
+            emb_y = val_results.get("embedding_labels")
+            if emb_f is not None and emb_y is not None:
+                if log_supcon_embedding_scatter(
+                    writer,
+                    features=emb_f,
+                    labels=emb_y,
+                    class_names=class_names,
+                    global_step=epoch,
+                    logger=logger,
+                ):
+                    logger.info("  SupCon validation embedding PCA scatter logged to TensorBoard")
+                if log_supcon_embedding_tsne_scatter(
+                    writer,
+                    features=emb_f,
+                    labels=emb_y,
+                    class_names=class_names,
+                    global_step=epoch,
+                    logger=logger,
+                ):
+                    logger.info("  SupCon validation embedding t-SNE scatter logged to TensorBoard")
+
         # Save best model
         if epoch_val_acc > best_val_acc:
             best_val_acc = epoch_val_acc
             best_epoch = epoch
+            best_val_cm = calculate_confusion_matrix(all_val_preds, all_val_labels, num_classes)
             best_model_path = models_dir / "best_model.pth"
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_acc': epoch_val_acc,
-                'val_loss': val_results['total_loss'],
-                'config': config,
-                'exit_results': val_results  # Save all exit results
-            }, best_model_path)
-            logger.info(f"  Best model saved! (Final Exit Val Acc: {best_val_acc:.4f})")
-        
-        # Save last epoch
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "val_acc": epoch_val_acc,
+                    "val_loss": epoch_val_loss,
+                    "config": config,
+                },
+                best_model_path,
+            )
+            logger.info(f"  Best model saved! (Val Acc: {best_val_acc:.4f})")
+
         last_model_path = models_dir / "last_epoch.pth"
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'val_acc': epoch_val_acc,
-            'val_loss': val_results['total_loss'],
-            'config': config,
-            'exit_results': val_results
-        }, last_model_path)
-    
-    # Final summary
+        torch.save(
+            {
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "val_acc": epoch_val_acc,
+                "val_loss": epoch_val_loss,
+                "config": config,
+            },
+            last_model_path,
+        )
+
     logger.info("=" * 80)
     logger.info("Training Complete!")
-    logger.info(f"Best final exit validation accuracy: {best_val_acc:.4f} at epoch {best_epoch + 1}")
+    logger.info(f"Best validation accuracy: {best_val_acc:.4f} at epoch {best_epoch + 1}")
     logger.info(f"Models saved to: {models_dir}")
     logger.info(f"TensorBoard logs: {tensorboard_dir}")
     logger.info("=" * 80)
-    
+
+    if best_val_cm is not None:
+        log_confusion_matrix_table(
+            best_val_cm,
+            class_names,
+            logger,
+            title=f"Best Validation Confusion Matrix  (epoch {best_epoch + 1}  |  val_acc={best_val_acc:.4f})",
+        )
+
     writer.close()
-    
-    # Return model, history, and best checkpoint path
     best_checkpoint_path = str(models_dir / "best_model.pth")
     return model, train_history, best_checkpoint_path
 

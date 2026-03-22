@@ -63,6 +63,7 @@ class Augmenter:
             # return time_loc_inputs, labels
 
         # time-domain augmentation
+        # breakpoint()
         augmented_time_loc_inputs, augmented_labels = time_loc_inputs, labels
         for augmenter in self.time_augmenters:
             augmented_time_loc_inputs, augmented_mod_labels, augmented_labels = augmenter(
@@ -209,8 +210,8 @@ class Augmenter:
         if args.train_mode != "supervised" and args.stage == "pretrain":
             self.time_aug_names = args.dataset_config[args.learn_framework]["random_augmenters"]["time_augmenters"]
         else:
-            """Supervised training and fine-tuning"""
-            self.time_aug_names = args.dataset_config[args.model]["fixed_augmenters"]["time_augmenters"]
+            """Supervised training and fine-tuning: fixed_augmenters from experiment only"""
+            self.time_aug_names = args.dataset_config["fixed_augmenters"]["time_augmenters"]
 
         self.time_augmenters = []
         for aug_name in self.time_aug_names:
@@ -231,8 +232,8 @@ class Augmenter:
         if args.train_mode != "supervised" and args.stage == "pretrain":
             self.freq_aug_names = args.dataset_config[args.learn_framework]["random_augmenters"]["freq_augmenters"]
         else:
-            """Supervised training and fine-tuning"""
-            self.freq_aug_names = args.dataset_config[args.model]["fixed_augmenters"]["freq_augmenters"]
+            """Supervised training and fine-tuning: fixed_augmenters from experiment only"""
+            self.freq_aug_names = args.dataset_config["fixed_augmenters"]["freq_augmenters"]
 
         self.freq_augmenters = []
         for aug_name in self.freq_aug_names:

@@ -145,9 +145,18 @@ def investigate_data_shapes(config):
     print(f"  Val batches: {len(val_loader)}")
     print(f"  Test batches: {len(test_loader)}")
     
-    # Create augmenter (same as in training)
+    # Create augmenter (same as in training; fixed_augmenters from experiment only)
     print("\nCreating augmenter...")
-    augmenter = create_augmenter(config, augmentation_mode="fixed")
+    experiment_name = config.get("experiment_name")
+    if not experiment_name or "experiments" not in config or not config["experiments"].get("enabled"):
+        raise ValueError(
+            "experiment_name and experiments.enabled are required for create_augmenter. "
+            "Pass -experiment_name <name> and use a YAML with experiments.enabled: true."
+        )
+    if experiment_name not in config["experiments"]:
+        raise ValueError(f"Experiment '{experiment_name}' not found in config['experiments'].")
+    experiment_config = config["experiments"][experiment_name]
+    augmenter = create_augmenter(config, augmentation_mode="fixed", experiment_config=experiment_config)
     print("  Augmenter created successfully")
     
     # Get one batch from train loader

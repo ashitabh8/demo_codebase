@@ -38,7 +38,7 @@ batch_size: 32
 num_workers: 4
 use_balanced_sampling: True
 
-base_experiment_dir: /home/madhav5/demo_codebase/src2/experiments
+base_experiment_dir: /home/misra8/demo_codebase/src2/experiments
 
 # Segments
 num_segments: 7
@@ -90,7 +90,6 @@ models:
                 use_maxpool: true
                 dropout_ratio: 0.2
                 fc_dim: 512
-                early_exits: []  # No early exits for teacher
                 weight_only_qat: false
                 weight_only_bits: 4
         
@@ -99,17 +98,30 @@ models:
                 model_source: "create_single_modal_model"
                 model_type: "resnet_simple"
                 active_modality: "audio"
-                layers: [1, 1, 1, 1]
+                layers: [2, 2, 2 ,2]
                 filter_sizes: [16, 32, 48, 96]
                 stem_kernel: 3
                 stem_stride: 1
                 use_maxpool: false
                 dropout_ratio: 0.1
                 fc_dim: 64
-                early_exits: []
-                weight_only_qat: true
-                weight_only_bits: 2
+                # weight_only_qat: true
+                # weight_only_bits: 2
+
         
+        # Probe: ~10MB ResNet for sizing
+        probe_resnet_10mb:
+                model_source: "create_single_modal_model"
+                model_type: "resnet_simple"
+                active_modality: "audio"
+                layers: [2, 2, 2, 2]
+                filter_sizes: [32, 64, 128, 256]
+                stem_kernel: 5
+                stem_stride: 1
+                use_maxpool: false
+                dropout_ratio: 0.2
+                fc_dim: 128
+
         # Student 2: Audio-only ConvOnly (~730 KB)
         student_audio_convonly:
                 model_source: "create_single_modal_model"
@@ -123,59 +135,19 @@ models:
                 stem_stride: 1
                 dropout_ratio: 0.1
                 fc_dim: 64
-                early_exits: [1, 2]
-                early_exit_type: "gap_linear"
 
 
 # =============================================================================
-# Distillation Experiments
+# Training Config Zoo: Reusable Training Recipes
 # =============================================================================
-# Orchestrate multi-stage distillation pipelines.
-# 
-# Structure:
-#   1. Define reusable models in the "models" section above
-#   2. Create experiment configs here that reference those models
-#   3. Each experiment defines a cascade: model[0] -> model[1] -> model[2] -> ...
-#   4. Training stages: stage[i] distills model[i+1] from model[i]
-#
-# Example: Add a new experiment
-#
-#   distillation:
-#       enabled: true
-#       
-#       my_seismic_experiment:
-#           models: ["teacher_resnet18", "student_seismic_resnet", "student_seismic_tiny"]
-#           stages:
-#               - name: "stage1"
-#                 teacher_idx: 0
-#                 student_idx: 1
-#                 epochs: 50
-#                 loss_name: "kd_loss"
-#                 temperature: 4.0
-#                 alpha: 0.5
-#               - name: "stage2"
-#                 teacher_idx: 1
-#                 student_idx: 2
-#                 epochs: 100
-#                 loss_name: "kd_loss"
-#                 temperature: 3.0
-#                 alpha: 0.7
-#           optimizer: {...}
-#           lr_scheduler: {...}
+# Define training procedures once, reference them by name in experiments.
+# Each config specifies type, epochs, loss, optimizer, and lr_scheduler.
 
-distillation:
-        enabled: true
-
-        only_audio_resnet18:
-                models: ["student_audio_resnet"]
-                checkpoints: []
-                stages:
-                        - train_type: "vanilla_supervised"
-                          teacher_idx: 0
-                          epochs: 50
-                          loss_name: "cross_entropy"
-                          # No early exit flag means they will have equal weights for all exits
-
+training_configs:
+        vanilla_supervised_ce:
+                type: "vanilla_supervised"
+                epochs: 50
+                loss_name: "cross_entropy"
                 optimizer:
                         name: "AdamW"
                         start_lr: 0.0001
@@ -183,95 +155,20 @@ distillation:
                         min_lr: 0.000001
                         clip_grad: 5.0
                         weight_decay: 0.05
-
                 lr_scheduler:
                         name: "cosine"
                         warmup_prefix: True
                         warmup_epochs: 0
-                        start_epoch: 0
                         decay_epochs: 2
                         decay_rate: 0.2
 
-        only_audio_convonly_early_exit:
-                models: ["student_audio_convonly"]  # Has early_exits: [1, 2] defined in model config
-                stages:
-                        - train_type: "vanilla_supervised"
-                          teacher_idx: 0
-                          epochs: 2  # Short test
-                          loss_name: "cross_entropy"
-                          exit_weights: [0.3, 0.3, 0.4]  # Optional: weights for exit1, exit2, final
-
-                optimizer:
-                        name: "AdamW"
-                        start_lr: 0.0001
-                        warmup_lr: 0.000001
-                        min_lr: 0.000001
-                        clip_grad: 5.0
-                        weight_decay: 0.05
-
-                lr_scheduler:
-                        name: "cosine"
-                        warmup_prefix: True
-                        warmup_epochs: 0
-                        start_epoch: 0
-                        decay_epochs: 2
-                        decay_rate: 0.2
-
-                          
-        
-        # Experiment: Train student model with early exits
-        only_audio_resnet_early_exit:
-                models: ["student_audio_resnet"]  # Has early_exits: [1, 2] defined in model config
-                stages:
-                        - train_type: "vanilla_supervised"
-                          teacher_idx: 0
-                          epochs: 2  # Short test
-                          loss_name: "cross_entropy"
-                          exit_weights: [0.3, 0.3, 0.4]  # Optional: weights for exit1, exit2, final
-
-                optimizer:
-                        name: "AdamW"
-                        start_lr: 0.0001
-                        warmup_lr: 0.000001
-                        min_lr: 0.000001
-                        clip_grad: 5.0
-                        weight_decay: 0.05
-
-                lr_scheduler:
-                        name: "cosine"
-                        warmup_prefix: True
-                        warmup_epochs: 0
-                        start_epoch: 0
-                        decay_epochs: 2
-                        decay_rate: 0.2
-        
-        # Experiment: Audio cascade (Audio ResNet18 -> student ResNet -> student ConvOnly)
-        audio_cascade_2stage:
-                models: ["teacher_audio_resnet18", "student_audio_resnet", "student_audio_convonly"]
-                
-                # Training stages (one per student model)
-                # Stage 0: teacher_resnet18 -> student_audio_resnet
-                # Stage 1: student_audio_resnet -> student_audio_convonly
-                stages:
-                        - name: "resnet18_to_audio_resnet"
-                          teacher_idx: 0
-                          student_idx: 1
-                          epochs: 50
-                          loss_name: "kd_loss"
-                          temperature: 4.0
-                          alpha: 0.5  # weight for KD loss vs CE loss
-                          save_checkpoint: true
-                          
-                        - name: "audio_resnet_to_convonly"
-                          teacher_idx: 1
-                          student_idx: 2
-                          epochs: 100
-                          loss_name: "kd_loss"
-                          temperature: 4.0
-                          alpha: 0.5
-                          save_checkpoint: true
-                
-                # Optimizer config for all student training stages
+        distill_resnet18_to_resnet:
+                type: "distillation"
+                teacher_model: "teacher_audio_resnet18"
+                temperature: 4.0
+                alpha: 0.5
+                epochs: 50
+                loss_name: "kd_loss"
                 optimizer:
                         name: "AdamW"
                         start_lr: 0.001
@@ -279,12 +176,68 @@ distillation:
                         min_lr: 0.00001
                         clip_grad: 5.0
                         weight_decay: 0.01
-                
-                # LR scheduler config for all stages
                 lr_scheduler:
                         name: "cosine"
                         warmup_prefix: True
                         warmup_epochs: 5
+
+        distill_resnet_to_convonly:
+                type: "distillation"
+                teacher_model: "student_audio_resnet"
+                temperature: 4.0
+                alpha: 0.5
+                epochs: 100
+                loss_name: "kd_loss"
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.001
+                        warmup_lr: 0.00001
+                        min_lr: 0.00001
+                        clip_grad: 5.0
+                        weight_decay: 0.01
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 5
+
+        qat_4bit_from_checkpoint:
+                type: "qat_from_checkpoint"
+                checkpoint_path: ""      # fill in at run time
+                weight_only_bits: 4
+                epochs: 30
+                loss_name: "cross_entropy"
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.00005
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 0
+
+# =============================================================================
+# Experiments
+# =============================================================================
+# Each experiment maps a student model to a training config.
+# Use -experiment_name <key> to select which experiment to run.
+
+experiments:
+        enabled: true
+
+        only_audio_resnet18:
+                model: "student_audio_resnet"
+                training: "vanilla_supervised_ce"
+
+        cascade_stage1:
+                model: "student_audio_resnet"
+                training: "distill_resnet18_to_resnet"
+
+        cascade_stage2:
+                model: "student_audio_convonly"
+                training: "distill_resnet_to_convonly"
 
 
 # =============================================================================

@@ -8,7 +8,7 @@ vehicle_classification:
         val_index_file: /data/kara4/Parkland/time_data_partition/val_index.txt  
         test_index_file: /data/kara4/Parkland/time_data_partition/test_index.txt 
 
-base_experiment_dir: /home/madhav5/demo_codebase/src2/experiments
+base_experiment_dir: /home/misra8/demo_codebase/src2/experiments
 
 cross_entropy:
         name: "cross_entropy"
@@ -87,7 +87,7 @@ models:
         # This should be a pre-trained model that we load from checkpoint
         teacher_audio_resnet18:
                 model_source: "create_single_modal_model"
-                model_type: "resnet_simple"
+                model_type: "resnet"
                 active_modality: "audio"
                 layers: [2, 2, 2, 2]  # Standard ResNet18
                 filter_sizes: [64, 128, 256, 512]  # Standard ResNet18 filters
@@ -103,13 +103,13 @@ models:
         # Student 1: Audio-only ResNet (~757 KB)
         student_audio_resnet:
                 model_source: "create_single_modal_model"
-                model_type: "resnet_simple"
+                model_type: "resnet"
                 active_modality: "audio"
                 layers: [2, 2, 2, 2, 2, 2, 2]
                 filter_sizes: [16, 32, 48, 96, 48, 32, 16]
-                stem_kernel: 3
-                stem_stride: 1
-                use_maxpool: false
+                stem_kernel: 7
+                stem_stride: 2
+                use_maxpool: true
                 dropout_ratio: 0.1
                 fc_dim: 64
                 early_exits: []
@@ -132,19 +132,92 @@ models:
                 early_exits: [1, 2]
                 early_exit_type: "gap_linear"
 
-distillation:
-        enabled: true
+        # Student 3: Audio-only DeepSense (small — 1 GRU layer)
+        student_audio_deepsense_small:
+                model_source: "create_single_modal_model"
+                model_type: "deepsense"
+                active_modality: "audio"
+                channels: [32, 64, 64]
+                kernel_sizes: [[1, 80], [1, 5], [1, 5]]
+                strides: [[1, 80], [1, 1], [1, 1]]
+                recurrent_dim: 64
+                recurrent_layers: 1
+                fc_dim: 128
+                dropout_ratio: 0.2
 
-        only_audio_resnet18:
-                models: ["student_audio_resnet"]
-                checkpoints: []
-                stages:
-                        - train_type: "vanilla_supervised"
-                          teacher_idx: 0
-                          epochs: 50
-                          loss_name: "cross_entropy"
-                          # No early exit flag means they will have equal weights for all exits
+        # Student 4: Audio-only DeepSense (standard — mirrors original config)
+        student_audio_deepsense:
+                model_source: "create_single_modal_model"
+                model_type: "deepsense"
+                active_modality: "audio"
+                channels: [64, 128, 128]
+                kernel_sizes: [[1, 80], [1, 5], [1, 5]]
+                strides: [[1, 80], [1, 1], [1, 1]]
+                recurrent_dim: 256
+                recurrent_layers: 2
+                fc_dim: 512
+                dropout_ratio: 0.2
 
+        # Student 6: Audio-only DeepSense Depthwise Large
+        # Larger capacity version of deepsense_dw:
+        #   - Smaller initial kernel [1,10] (non-overlapping 10-bin windows vs 20-bin)
+        #     gives finer freq granularity in first layer; same stride-10 compression ratio
+        #   - 5 freq layers (added L5 [1,3]/same for extra non-linearity at freq_out=14)
+        #   - temporal_channels doubled to 512 (spectrum_proj projects to richer space)
+        #   - 6 temporal layers (receptive field spans all 10 intervals)
+        # Memory @ B=1 INT8: weights ~6 MB (37.5% of 16MB Flash), peak activations ~200 KB
+        # freq_out: (1600-10)//10+1=160 -> (160-5)//5+1=32 -> (32-5)//2+1=14 -> 14 -> 14
+        student_audio_deepsense_dw_large:
+                model_source: "create_single_modal_model"
+                model_type: "deepsense_dw"
+                active_modality: "audio"
+                # Freq 2D depthwise-separable conv stack
+                channels_freq:     [128, 256, 512, 512, 512]
+                kernel_sizes_freq: [[1, 10], [1, 5], [1, 5], [1, 3], [1, 3]]
+                strides_freq:      [[1, 10], [1, 5], [1, 2], [1, 1], [1, 1]]
+                # Temporal 1D depthwise-separable conv stack
+                # spectrum_proj: Linear(512*14=7168, 512) -> ~3.5 MB INT8
+                temporal_channels: 512
+                num_temporal_layers: 6
+                temporal_kernel: 3
+                # Head
+                fc_dim: 512
+                dropout_ratio: 0.35
+
+        # Student 5: Audio-only DeepSense Depthwise (CMSIS-NN friendly, no GRU)
+        # Freq conv: 4-layer DW-sep, finer initial compression ([1,20]/stride-10 vs [1,80]/stride-80)
+        # Temporal: 4-layer DW-sep Conv1d over 10 intervals (replaces GRU)
+        # temporal_channels is independent of channels_freq[-1], controlling projection + temporal depth
+        # Memory @ B=1 INT8: weights ~2.4 MB, peak activations ~200 KB
+        student_audio_deepsense_dw:
+                model_source: "create_single_modal_model"
+                model_type: "deepsense_dw"
+                active_modality: "audio"
+                # Freq 2D depthwise-separable conv stack
+                # freq_out: 1600 -> (1600-20)//10+1=159 -> (159-10)//5+1=30 -> (30-5)//2+1=13 -> 13
+                channels_freq:     [128, 256, 512, 512]
+                kernel_sizes_freq: [[1, 20], [1, 10], [1, 5], [1, 3]]
+                strides_freq:      [[1, 10], [1,  5], [1, 2], [1, 1]]
+                # Temporal 1D depthwise-separable conv stack (independent channel dim)
+                # spectrum_proj: Linear(512*13=6656, 256) -> ~1.6 MB INT8
+                temporal_channels: 256
+                num_temporal_layers: 4
+                temporal_kernel: 3
+                # Head
+                fc_dim: 512
+                dropout_ratio: 0.2
+
+# =============================================================================
+# Training Config Zoo: Reusable Training Recipes
+# =============================================================================
+# Define training procedures once, reference them by name in experiments.
+# Each config specifies type, epochs, loss, optimizer, and lr_scheduler.
+
+training_configs:
+        vanilla_supervised_ce:
+                type: "vanilla_supervised"
+                epochs: 50
+                loss_name: "cross_entropy"
                 optimizer:
                         name: "AdamW"
                         start_lr: 0.0001
@@ -152,24 +225,19 @@ distillation:
                         min_lr: 0.000001
                         clip_grad: 5.0
                         weight_decay: 0.05
-
                 lr_scheduler:
                         name: "cosine"
                         warmup_prefix: True
                         warmup_epochs: 0
-                        start_epoch: 0
                         decay_epochs: 2
                         decay_rate: 0.2
 
-        only_audio_convonly_early_exit:
-                models: ["student_audio_convonly"]  # Has early_exits: [1, 2] defined in model config
-                stages:
-                        - train_type: "vanilla_supervised"
-                          teacher_idx: 0
-                          epochs: 2  # Short test
-                          loss_name: "cross_entropy"
-                          exit_weights: [0.3, 0.3, 0.4]  # Optional: weights for exit1, exit2, final
-
+        vanilla_supervised_contrastive:
+                type: "vanilla_supervised_contrastive"
+                epochs: 200
+                loss_name: "ce_supcon"
+                supcon_temperature: 0.07
+                supcon_weight: 1.0
                 optimizer:
                         name: "AdamW"
                         start_lr: 0.0001
@@ -177,70 +245,20 @@ distillation:
                         min_lr: 0.000001
                         clip_grad: 5.0
                         weight_decay: 0.05
-
                 lr_scheduler:
                         name: "cosine"
                         warmup_prefix: True
                         warmup_epochs: 0
-                        start_epoch: 0
                         decay_epochs: 2
                         decay_rate: 0.2
 
-                          
-        
-        # Experiment: Train student model with early exits
-        only_audio_resnet_early_exit:
-                models: ["student_audio_resnet"]  # Has early_exits: [1, 2] defined in model config
-                stages:
-                        - train_type: "vanilla_supervised"
-                          teacher_idx: 0
-                          epochs: 2  # Short test
-                          loss_name: "cross_entropy"
-                          exit_weights: [0.3, 0.3, 0.4]  # Optional: weights for exit1, exit2, final
-
-                optimizer:
-                        name: "AdamW"
-                        start_lr: 0.0001
-                        warmup_lr: 0.000001
-                        min_lr: 0.000001
-                        clip_grad: 5.0
-                        weight_decay: 0.05
-
-                lr_scheduler:
-                        name: "cosine"
-                        warmup_prefix: True
-                        warmup_epochs: 0
-                        start_epoch: 0
-                        decay_epochs: 2
-                        decay_rate: 0.2
-        
-        # Experiment: Audio cascade (Audio ResNet18 -> student ResNet -> student ConvOnly)
-        audio_cascade_2stage:
-                models: ["teacher_audio_resnet18", "student_audio_resnet", "student_audio_convonly"]
-                
-                # Training stages (one per student model)
-                # Stage 0: teacher_resnet18 -> student_audio_resnet
-                # Stage 1: student_audio_resnet -> student_audio_convonly
-                stages:
-                        - name: "resnet18_to_audio_resnet"
-                          teacher_idx: 0
-                          student_idx: 1
-                          epochs: 50
-                          loss_name: "kd_loss"
-                          temperature: 4.0
-                          alpha: 0.5  # weight for KD loss vs CE loss
-                          save_checkpoint: true
-                          
-                        - name: "audio_resnet_to_convonly"
-                          teacher_idx: 1
-                          student_idx: 2
-                          epochs: 100
-                          loss_name: "kd_loss"
-                          temperature: 4.0
-                          alpha: 0.5
-                          save_checkpoint: true
-                
-                # Optimizer config for all student training stages
+        distill_resnet18_to_resnet:
+                type: "distillation"
+                teacher_model: "teacher_audio_resnet18"
+                temperature: 4.0
+                alpha: 0.5
+                epochs: 50
+                loss_name: "kd_loss"
                 optimizer:
                         name: "AdamW"
                         start_lr: 0.001
@@ -248,12 +266,117 @@ distillation:
                         min_lr: 0.00001
                         clip_grad: 5.0
                         weight_decay: 0.01
-                
-                # LR scheduler config for all stages
                 lr_scheduler:
                         name: "cosine"
                         warmup_prefix: True
                         warmup_epochs: 5
+
+        distill_resnet_to_convonly:
+                type: "distillation"
+                teacher_model: "student_audio_resnet"
+                temperature: 4.0
+                alpha: 0.5
+                epochs: 100
+                loss_name: "kd_loss"
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.001
+                        warmup_lr: 0.00001
+                        min_lr: 0.00001
+                        clip_grad: 5.0
+                        weight_decay: 0.01
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 5
+
+        qat_4bit_from_checkpoint:
+                type: "qat_from_checkpoint"
+                checkpoint_path: ""      # fill in at run time
+                weight_only_bits: 4
+                epochs: 30
+                loss_name: "cross_entropy"
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.00005
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 0
+
+# =============================================================================
+# Experiments
+# =============================================================================
+# Each experiment maps a student model to a training config.
+# Use -experiment_name <key> to select which experiment to run.
+
+experiments:
+        enabled: true
+        only_audio_original_resnet18:
+                model: "teacher_audio_resnet18"
+                training: "vanilla_supervised_ce"
+                fixed_augmenters:
+                        time_augmenters: ["no"]
+                        freq_augmenters: ["no"]
+        only_audio_resnet18:
+                model: "student_audio_resnet"
+                training: "vanilla_supervised_ce"
+                fixed_augmenters:
+                        time_augmenters: ["no"]
+                        freq_augmenters: ["no"]
+
+        only_audio_resnet18_supcon:
+                model: "teacher_audio_resnet18"
+                training: "vanilla_supervised_contrastive"
+                fixed_augmenters:
+                        time_augmenters: ["time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
+        cascade_stage1:
+                model: "student_audio_resnet"
+                training: "distill_resnet18_to_resnet"
+                fixed_augmenters:
+                        time_augmenters: ["time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
+        cascade_stage2:
+                model: "student_audio_convonly"
+                training: "distill_resnet_to_convonly"
+                fixed_augmenters:
+                        time_augmenters: ["time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
+        only_audio_deepsense_small:
+                model: "student_audio_deepsense_small"
+                training: "vanilla_supervised_ce"
+                fixed_augmenters:
+                        time_augmenters: ["no"]
+                        freq_augmenters: ["no"]
+ 
+        only_audio_deepsense:
+                model: "student_audio_deepsense"
+                training: "vanilla_supervised_contrastive"
+                fixed_augmenters:
+                        time_augmenters: ["time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
+        only_audio_deepsense_dw:
+                model: "student_audio_deepsense_dw"
+                training: "vanilla_supervised_contrastive"
+                fixed_augmenters:
+                        time_augmenters: ["time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
+        only_audio_deepsense_dw_large:
+                model: "student_audio_deepsense_dw_large"
+                training: "vanilla_supervised_contrastive"
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["phase_shift", "freq_mask", "freq_mask"]
 # quantization:
 #         enable: False
 
@@ -398,38 +521,38 @@ distillation:
 #                 visualize_importance_every: 2  # epochs
 
                 
-ResNet:
-        # Architecture settings
-        model_name: "resnet18"  # Options: resnet18, resnet34, resnet50, resnet101, resnet152
-        block_type: "basic"  # "basic" for ResNet18/34, "bottleneck" for ResNet50+
-        layers: [2, 2, 2, 2]  # ResNet18
-        # layers: [3, 4, 6, 3]  # ResNet34
-        # layers: [3, 4, 6, 3]  # ResNet50 (with block_type: "bottleneck")
-        dropout_ratio: 0.2
-        fc_dim: 256
-
-  # Optimizer config
-        optimizer:
-                name: "AdamW"
-                start_lr: 0.0001
-                warmup_lr: 0.000001
-                min_lr: 0.000001
-                clip_grad: 5.0
-                weight_decay: 0.05
-
-  # LR scheduler
-        lr_scheduler:
-                name: "cosine"
-                warmup_prefix: True
-                warmup_epochs: 0
-                train_epochs: 50
-                start_epoch: 0
-                decay_epochs: 2
-                decay_rate: 0.2
-
-        fixed_augmenters:
-                time_augmenters: ["audio_noise"]
-                freq_augmenters: ["no"]
+# ResNet:
+#         # Architecture settings
+#         model_name: "resnet18"  # Options: resnet18, resnet34, resnet50, resnet101, resnet152
+#         block_type: "basic"  # "basic" for ResNet18/34, "bottleneck" for ResNet50+
+#         layers: [2, 2, 2, 2]  # ResNet18
+#         # layers: [3, 4, 6, 3]  # ResNet34
+#         # layers: [3, 4, 6, 3]  # ResNet50 (with block_type: "bottleneck")
+#         dropout_ratio: 0.2
+#         fc_dim: 256
+#
+#   # Optimizer config
+#         optimizer:
+#                 name: "AdamW"
+#                 start_lr: 0.0001
+#                 warmup_lr: 0.000001
+#                 min_lr: 0.000001
+#                 clip_grad: 5.0
+#                 weight_decay: 0.05
+#
+#   # LR scheduler
+#         lr_scheduler:
+#                 name: "cosine"
+#                 warmup_prefix: True
+#                 warmup_epochs: 0
+#                 train_epochs: 50
+#                 start_epoch: 0
+#                 decay_epochs: 2
+#                 decay_rate: 0.2
+#
+#         fixed_augmenters:
+#                 time_augmenters: ["time_mask"]
+#                 freq_augmenters: ["freq_mask"]
 
 MobileNetV2:
         # Architecture settings
@@ -622,7 +745,7 @@ permutation:
         prob: 0.5
 
 scaling:
-        prob: 0.5
+        prob: 0.8
         std: 0.2
 
 time_warp:
@@ -642,15 +765,15 @@ channel_shuffle:
         prob: 0.5
 
 freq_mask:
-        prob: 0.5 
-        mask_ratio: 0.3
+        prob: 0.8 
+        mask_ratio: 0.35
 
 time_mask:
-        prob: 0.5
+        prob: 0.8
         mask_ratio: 0.3
 
 phase_shift:
-        prob: 0.5 
+        prob: 0.8
 
 horizontal_flip:
         prob: 0.5

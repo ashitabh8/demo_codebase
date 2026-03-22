@@ -149,7 +149,7 @@ def get_config():
     # Add command line args to config for easy access
     config['experiment_name'] = args.experiment_name
     config['yaml_path'] = args.yaml_path
-    config['device'] = f'cuda:{args.gpu}'
+    config['device'] = 'cpu' if args.gpu < 0 else f'cuda:{args.gpu}'
     config['include_classes'] = args.include_classes
     
     return config

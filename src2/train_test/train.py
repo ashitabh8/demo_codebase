@@ -23,97 +23,58 @@ sys.path.insert(0, str(src2_path))
 from dataset_utils.parse_args_utils import get_config
 from dataset_utils.MultiModalDataLoader import create_dataloaders
 from data_augmenter import create_augmenter, apply_augmentation
-from models.create_models import create_single_modal_model
+from models.create_models import create_single_modal_model, get_total_memory
 from train_test.loss import get_loss_function
 from train_test.train_test_utils import (
-    setup_experiment_dir, train, train_with_early_exits, setup_optimizer, setup_scheduler, load_checkpoint
+    setup_experiment_dir,
+    setup_train_file_logging,
+    train,
+    train_vanilla_supervised_contrastive,
+    setup_optimizer,
+    setup_scheduler,
+    apply_class_subset,
+    validate_and_resolve_training_config,
 )
 from train_test.normalize import setup_normalization
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
 
 def main():
     """Main training function."""
-    
+
     # ========================================================================
     # 1. Load Configuration
     # ========================================================================
     logging.info("=" * 80)
     logging.info("TRAINING SCRIPT")
     logging.info("=" * 80)
-    
+
     config = get_config()
     logging.info("Configuration loaded successfully")
-    
-    # Get experiment name from config
-    experiment_name = config.get('experiment_name')
-    if experiment_name is None:
-        raise ValueError("experiment_name not found in config. Please provide --experiment_name argument.")
-    
-    logging.info(f"  Experiment: {experiment_name}")
-    logging.info(f"  Dataset: {config.get('yaml_path', 'Unknown')}")
-    logging.info(f"  Device: {config.get('device', 'cpu')}")
-    
-    # Load distillation experiment configuration
-    if 'distillation' not in config or not config['distillation'].get('enabled', False):
-        raise ValueError("Distillation not enabled in config. Set distillation.enabled: true")
-    
-    if experiment_name not in config['distillation']:
-        raise ValueError(f"Experiment '{experiment_name}' not found in distillation config. "
-                        f"Available experiments: {list(config['distillation'].keys())}")
-    
-    experiment_config = config['distillation'][experiment_name]
-    models_list = experiment_config['models']
-    stages = experiment_config['stages']
-    
-    logging.info(f"  Models in cascade: {models_list}")
-    logging.info(f"  Number of stages: {len(stages)}")
 
-    include = config.get('include_classes')
-    if include:
-        include = sorted(set(include))
-        task_cfg = config['vehicle_classification']
+    (
+        experiment_name,
+        experiment_config,
+        model_name,
+        training_config_name,
+        training_config,
+        train_type,
+        stage_epochs,
+        loss_name,
+    ) = validate_and_resolve_training_config(config)
+    # breakpoint()
 
-        num_classes_orig = task_cfg['num_classes']
-        invalid = [c for c in include if c < 0 or c >= num_classes_orig]
-        if invalid:
-            raise ValueError(
-                f"include_classes contains invalid indices {invalid} "
-                f"for num_classes={num_classes_orig}"
-            )
+    apply_class_subset(config)
 
-        # old index -> new contiguous index
-        old_to_new = {old: new for new, old in enumerate(include)}
-        new_class_names = [task_cfg['class_names'][i] for i in include]
-
-        # Update task config to reflect the subset
-        task_cfg['num_classes'] = len(include)
-        task_cfg['class_names'] = new_class_names
-
-        # Store mapping for the dataset layer
-        config['include_classes'] = include
-        config['include_classes_mapping'] = old_to_new
-
-        logging.info(f"Using class subset: {include}")
-        logging.info(f"Updated num_classes: {task_cfg['num_classes']}")
-        logging.info(f"Updated class_names: {task_cfg['class_names']}")
-
-    
-    
     # ========================================================================
     # 2. Create Dataloaders
     # ========================================================================
-    logging.info("\nCreating dataloaders...")
     train_loader, val_loader, test_loader = create_dataloaders(config=config)
-    logging.info("  Train batches: {}".format(len(train_loader)))
-    logging.info("  Val batches: {}".format(len(val_loader)))
-    logging.info("  Test batches: {}".format(len(test_loader)))
-    
+
     # ========================================================================
     # 2b. Setup Normalization
     # ========================================================================
@@ -122,200 +83,174 @@ def main():
         train_loader, val_loader, test_loader, config
     )
     logging.info("Normalization setup complete")
-    
+
     # ========================================================================
     # 3. Create Augmenter
     # ========================================================================
     logging.info("\nCreating augmenter...")
-    augmenter = create_augmenter(config, augmentation_mode="fixed")
+    augmenter = create_augmenter(
+        config, augmentation_mode="fixed", experiment_config=experiment_config
+    )
     logging.info("Augmenter created successfully")
-    
+
     # ========================================================================
     # 4. Setup Experiment Directory
     # ========================================================================
     logging.info("\nSetting up experiment directory...")
-    experiment_dir, tensorboard_dir = setup_experiment_dir(config, experiment_name=experiment_name)
-    
+    experiment_dir, tensorboard_dir = setup_experiment_dir(
+        config, experiment_name=experiment_name
+    )
+    tb_run_dir = Path(tensorboard_dir).resolve()
+    logging.info(
+        'TensorBoard (this run): tensorboard --logdir="%s" --port=6006',
+        tb_run_dir,
+    )
+    logging.info(
+        "To compare multiple runs, point --logdir at the parent experiments directory instead."
+    )
+
     # ========================================================================
     # 5. Setup File Logging
     # ========================================================================
-    from pathlib import Path
-    logs_dir = Path(experiment_dir) / "logs"
-    log_file = logs_dir / "train.log"
-    
-    # Add file handler to root logger
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    logging.getLogger().addHandler(file_handler)
-    
-    logging.info(f"Logging to file: {log_file}")
-    
-    # Log the command line
-    import sys
-    command_line = " ".join(sys.argv)
-    logging.info("")
-    logging.info("Command line used to run this script:")
-    logging.info(f"  {command_line}")
-    
+    setup_train_file_logging(experiment_dir, argv=sys.argv)
+
     # ========================================================================
-    # 6. Multi-Stage Training Loop
+    # 6. Training
     # ========================================================================
     logging.info("\n" + "=" * 80)
-    logging.info("STARTING MULTI-STAGE TRAINING")
+    logging.info("STARTING TRAINING")
     logging.info("=" * 80 + "\n")
-    
-    device = torch.device(config.get('device', 'cuda:0') if torch.cuda.is_available() else 'cpu')
-    stage_checkpoints = []  # Track checkpoints for each stage
-    
+
     try:
-        for stage_idx, stage_config in enumerate(stages):
-            logging.info("\n" + "=" * 80)
-            logging.info(f"STAGE {stage_idx + 1}/{len(stages)}")
-            logging.info("=" * 80)
-            
-            # Get model name for this stage
-            model_idx = stage_config['teacher_idx']
-            model_name = models_list[model_idx]
-            train_type = stage_config['train_type']
-            stage_epochs = stage_config['epochs']
-            loss_name = stage_config['loss_name']
-            
-            logging.info(f"  Model: {model_name}")
-            logging.info(f"  Training type: {train_type}")
-            logging.info(f"  Epochs: {stage_epochs}")
-            logging.info(f"  Loss: {loss_name}")
-            
-            # ================================================================
-            # Create Model
-            # ================================================================
-            logging.info("\nCreating model...")
-            # Create a temporary config with the model definition at the top level
-            # since create_single_modal_model expects config[model_name]
-            temp_config = config.copy()
-            temp_config[model_name] = config['models'][model_name]
-            model = create_single_modal_model(temp_config, model_name)
-            logging.info(f"Model created: {model_name}")
-            
-            # ================================================================
-            # Load checkpoint if not first stage
-            # ================================================================
-            checkpoints_list = experiment_config.get("checkpoints", [])
-            if model_idx < len(checkpoints_list) and checkpoints_list[model_idx]:
-                ckpt_path = checkpoints_list[model_idx]
-                model = load_checkpoint(model, ckpt_path, device)
-                logging.info(f"Loaded model from checkpoint: {ckpt_path}")
-            elif stage_idx > 0:
-                prev_checkpoint = stage_checkpoints[stage_idx - 1]
-                logging.info(f"\nLoading teacher checkpoint from previous stage:")
-                logging.info(f"  {prev_checkpoint}")
-                model = load_checkpoint(model, prev_checkpoint, device)
-            
-            # ================================================================
-            # Setup Loss Function
-            # ================================================================
-            # Detect if model has early exits
-            model_config = config['models'][model_name]
-            has_early_exits = len(model_config.get('early_exits', [])) > 0
-            
-            logging.info("\nSetting up loss function...")
-            loss_fn, loss_fn_name = get_loss_function(stage_config, has_early_exits=has_early_exits)
-            
-            # ================================================================
-            # Setup Optimizer and Scheduler
-            # ================================================================
-            logging.info("\nSetting up optimizer and scheduler...")
-            optimizer = setup_optimizer(model, config, experiment_config=experiment_config)
-            scheduler = setup_scheduler(optimizer, config, experiment_config=experiment_config, stage_config=stage_config)
-            
-            # ================================================================
-            # Train based on train_type
-            # ================================================================
-            if train_type == 'vanilla_supervised':
-                if has_early_exits:
-                    logging.info(f"\nStarting vanilla supervised training with early exits...")
-                    logging.info(f"  Number of early exits: {len(model_config['early_exits'])}")
-                    model, train_history, best_checkpoint_path = train_with_early_exits(
-                        model=model,
-                        train_loader=train_loader,
-                        val_loader=val_loader,
-                        config=config,
-                        experiment_dir=experiment_dir,
-                        loss_fn=loss_fn,
-                        augmenter=augmenter,
-                        apply_augmentation_fn=apply_augmentation,
-                        optimizer=optimizer,
-                        scheduler=scheduler,
-                        num_epochs=stage_epochs,
-                    )
-                else:
-                    logging.info("\nStarting vanilla supervised training...")
-                    model, train_history, best_checkpoint_path = train(
-                        model=model,
-                        train_loader=train_loader,
-                        val_loader=val_loader,
-                        config=config,
-                        experiment_dir=experiment_dir,
-                        loss_fn=loss_fn,
-                        val_fn=None,
-                        augmenter=augmenter,
-                        apply_augmentation_fn=apply_augmentation,
-                        optimizer=optimizer,
-                        scheduler=scheduler,
-                        num_epochs=stage_epochs
-                    )
-            else:
-                raise ValueError(f"Unknown training type: {train_type}")
-            
-            # ================================================================
-            # Store checkpoint for next stage
-            # ================================================================
-            stage_checkpoints.append(best_checkpoint_path)
-            logging.info(f"\nStage {stage_idx + 1} complete!")
-            logging.info(f"  Best checkpoint: {best_checkpoint_path}")
-            
-            # Update config with checkpoint path
-            if 'models' not in config:
-                config['models'] = {}
-            if model_name not in config['models']:
-                config['models'][model_name] = {}
-            config['models'][model_name]['checkpoint_path'] = best_checkpoint_path
-            
-            # Save updated config
-            config_path = Path(experiment_dir) / "config.yaml"
-            with open(config_path, 'w') as f:
-                yaml.dump(config, f, default_flow_style=False)
-        
+        # ====================================================================
+        # Create Student Model
+        # ====================================================================
+        # Factory pulls the model config from `config["models"][model_name]`
+        model = create_single_modal_model(config, model_name)
+        logging.info(f"Student model created: {model_name}")
+
+        # Memory profile (B=1; divide parameter_memory by 4 for INT8 estimate)
+        _location = config["location_names"][0]
+        _modality = config["models"][model_name]["active_modality"]
+        _in_ch = config["loc_mod_in_freq_channels"][_location][_modality]
+        _n_segs = config.get("num_segments", 10)
+        _spec_len = config["loc_mod_spectrum_len"][_location][_modality]
+        _dummy = {_location: {_modality: torch.randn(1, _in_ch, _n_segs, _spec_len)}}
+        _mem = get_total_memory(model, _dummy, unit="MB")
+        logging.info("Memory profile (float32 / INT8 weight-only estimate):")
+        logging.info(
+            "  Parameters : %.2f MB  (INT8 ≈ %.2f MB)",
+            _mem["parameter_memory"], _mem["parameter_memory"] / 4,
+        )
+        logging.info("  Peak activation (B=1): %.3f MB", _mem["activation_memory"])
+        del _dummy, _mem
+
+        # ====================================================================
+        # Setup Loss Function
+        # ====================================================================
+        logging.info("\nSetting up loss function...")
+        loss_fn, _ = get_loss_function(training_config)
+
+        # ====================================================================
+        # Setup Optimizer and Scheduler
+        # ====================================================================
+        logging.info("\nSetting up optimizer and scheduler...")
+        optimizer = setup_optimizer(
+            model, config, training_config=training_config
+        )
+        scheduler = setup_scheduler(optimizer, config, training_config)
+
+        # ====================================================================
+        # Train
+        # ====================================================================
+        if train_type == "vanilla_supervised":
+            logging.info("\nStarting vanilla supervised training...")
+            model, _, best_checkpoint_path = train(
+                model=model,
+                train_loader=train_loader,
+                val_loader=val_loader,
+                config=config,
+                experiment_dir=experiment_dir,
+                loss_fn=loss_fn,
+                val_fn=None,
+                augmenter=augmenter,
+                apply_augmentation_fn=apply_augmentation,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                num_epochs=stage_epochs,
+            )
+        elif train_type == "vanilla_supervised_contrastive":
+            logging.info(
+                "\nStarting vanilla supervised contrastive training..."
+            )
+            model, _, best_checkpoint_path = (
+                train_vanilla_supervised_contrastive(
+                    model=model,
+                    train_loader=train_loader,
+                    val_loader=val_loader,
+                    config=config,
+                    experiment_dir=experiment_dir,
+                    loss_fn=loss_fn,
+                    val_fn=None,
+                    augmenter=augmenter,
+                    apply_augmentation_fn=apply_augmentation,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    num_epochs=stage_epochs,
+                )
+            )
+        elif train_type == "distillation":
+            raise NotImplementedError(
+                "Distillation training loop not yet implemented. "
+                "Wire up kd_loss and a distillation train function first."
+            )
+        else:
+            raise ValueError(f"Unknown training type: {train_type}")
+
+        # ====================================================================
+        # Update config with checkpoint path and save
+        # ====================================================================
+        config["models"][model_name]["checkpoint_path"] = best_checkpoint_path
+
+        config_path = Path(experiment_dir) / "config.yaml"
+        with open(config_path, "w") as f:
+            yaml.dump(config, f, default_flow_style=False)
+
         # ====================================================================
         # Training Complete
         # ====================================================================
         logging.info("\n" + "=" * 80)
-        logging.info("ALL STAGES COMPLETED SUCCESSFULLY!")
+        logging.info("TRAINING COMPLETED SUCCESSFULLY!")
         logging.info("=" * 80)
         logging.info(f"\nExperiment directory: {experiment_dir}")
-        logging.info(f"Checkpoints saved:")
-        for i, ckpt in enumerate(stage_checkpoints):
-            logging.info(f"  Stage {i+1}: {ckpt}")
+        logging.info(f"Best checkpoint: {best_checkpoint_path}")
+        logging.info(
+            'TensorBoard (this run): tensorboard --logdir="%s" --port=6006',
+            tb_run_dir,
+        )
+        logging.info(
+            "To compare multiple runs, point --logdir at the parent experiments directory instead."
+        )
         logging.info("=" * 80)
-        
+
     except KeyboardInterrupt:
         logging.info("\n" + "=" * 80)
         logging.warning("Training interrupted by user")
         logging.info("=" * 80)
         logging.info(f"Experiment directory: {experiment_dir}")
         sys.exit(0)
-    
+
     except Exception as e:
         logging.error("\n" + "=" * 80)
         logging.error("ERROR DURING TRAINING")
         logging.error("=" * 80)
         logging.error(f"Error: {e}")
-        
+
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 
 
 if __name__ == "__main__":
     main()
-

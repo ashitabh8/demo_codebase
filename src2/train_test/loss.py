@@ -58,132 +58,163 @@ class CrossEntropyLossForDictOutput(nn.Module):
         return self.ce_loss(logits, target)
 
 
-class CrossEntropyLossWithEarlyExits(nn.Module):
-    """
-    CrossEntropyLoss for models with early exits.
-    
-    Calculates CE loss for each early exit and the final exit,
-    then returns weighted sum. This allows the model to learn
-    at multiple depths simultaneously.
-    
-    Model output format:
-        {'logits': final_tensor, 'exits': [exit1_tensor, exit2_tensor, ...], 'features': ...}
-    
-    Args:
-        exit_weights (list, optional): Weights for each exit [exit1, exit2, ..., final].
-                                       Should sum to 1.0 for balanced training.
-                                       If None, uses equal weights for all exits.
-    
-    Forward Args:
-        model_output (dict): Model output with 'logits' and 'exits' keys
-        target (tensor): Ground truth labels (B,)
-    
-    Returns:
-        loss (tensor): Weighted sum of losses from all exits
-    
-    Example:
-        >>> # Model with 2 early exits + 1 final exit
-        >>> loss_fn = CrossEntropyLossWithEarlyExits(exit_weights=[0.3, 0.3, 0.4])
-        >>> outputs = {
-        ...     'logits': torch.randn(32, 10),  # Final exit
-        ...     'exits': [torch.randn(32, 10), torch.randn(32, 10)],  # 2 early exits
-        ...     'features': torch.randn(32, 512)
-        ... }
-        >>> labels = torch.randint(0, 10, (32,))
-        >>> loss = loss_fn(outputs, labels)
-    """
-    def __init__(self, exit_weights=None):
-        super().__init__()
-        self.exit_weights = exit_weights
-        self.ce_loss = nn.CrossEntropyLoss()
-    
-    def forward(self, model_output, target):
-        # Extract exits and final logits
-        if not isinstance(model_output, dict):
-            raise ValueError("Model output must be a dict with 'logits' and 'exits' keys")
-        
-        final_logits = model_output['logits']
-        early_exits = model_output['exits']  # List of tensors
-        
-        num_early_exits = len(early_exits)
-        num_total_exits = num_early_exits + 1  # +1 for final exit
-        
-        # Use equal weights if not provided
-        if self.exit_weights is None:
-            weights = [1.0 / num_total_exits] * num_total_exits
-        else:
-            weights = self.exit_weights
-            # Validate weights
-            if len(weights) != num_total_exits:
-                raise ValueError(f"Expected {num_total_exits} weights, got {len(weights)}")
-        
-        # Calculate loss for each early exit
-        total_loss = 0.0
-        for idx, exit_logits in enumerate(early_exits):
-            loss = self.ce_loss(exit_logits, target)
-            total_loss += weights[idx] * loss
-        
-        # Add final exit loss
-        final_loss = self.ce_loss(final_logits, target)
-        total_loss += weights[-1] * final_loss
-        
-        return total_loss
-
 
 # =============================================================================
 # Loss Factory Function
 # =============================================================================
 
-def get_loss_function(stage_config, has_early_exits=False):
+def get_loss_function(training_config):
     """
-    Factory function to get the loss function for distillation training.
-    
-    Simplified for distillation pipelines - reads loss configuration from stage config
-    and returns the appropriate loss function.
-    
+    Factory function to get the loss function for training.
+
+    Reads loss configuration from training config and returns the appropriate
+    loss function.
+
     Args:
-        stage_config (dict): Stage configuration dictionary containing:
+        training_config (dict): Training configuration dictionary containing:
             - 'loss_name': Name of the loss function (e.g., 'cross_entropy')
-            - 'exit_weights' (optional): Weights for early exits if model has them
-        has_early_exits (bool): Whether the model has early exits (auto-detected from model config)
-    
+
     Returns:
         tuple: (loss_fn, loss_name)
             - loss_fn: The loss function instance
             - loss_name: String name of the loss
-    
+
     Example:
-        >>> # Standard model (no early exits)
-        >>> stage_config = {'loss_name': 'cross_entropy', 'epochs': 50}
-        >>> loss_fn, loss_name = get_loss_function(stage_config, has_early_exits=False)
-        
-        >>> # Model with early exits (detected from model config)
-        >>> stage_config = {'loss_name': 'cross_entropy', 'exit_weights': [0.3, 0.3, 0.4]}
-        >>> loss_fn, loss_name = get_loss_function(stage_config, has_early_exits=True)
+        >>> training_config = {'loss_name': 'cross_entropy', 'epochs': 50}
+        >>> loss_fn, loss_name = get_loss_function(training_config)
     """
-    # Extract loss name from stage config
-    loss_name = stage_config['loss_name']
-    
+    # Extract loss name from training config
+    loss_name = training_config['loss_name']
+
     # Log loss function details
     logging.info(f"Loss function: {loss_name}")
-    
+
     # Create loss function based on name
     if loss_name == "cross_entropy":
-        # Automatically use early exit loss if model has early exits
-        if has_early_exits:
-            exit_weights = stage_config.get('exit_weights', None)
-            logging.info("  Using CrossEntropyLossWithEarlyExits")
-            if exit_weights:
-                logging.info(f"  Exit weights: {exit_weights}")
-            else:
-                logging.info("  Using equal weights for all exits")
-            return CrossEntropyLossWithEarlyExits(exit_weights), loss_name
+        logging.info("  Using CrossEntropyLossForDictOutput (handles dict model outputs)")
+        return CrossEntropyLossForDictOutput(), loss_name
+
+    if loss_name == "ce_supcon":
+        # Supervised contrastive learning on embeddings with CE on logits.
+        temperature = float(training_config.get("supcon_temperature", 0.07))
+        supcon_weight = float(training_config.get("supcon_weight", 1.0))
+        logging.info(
+            "  Using CrossEntropyPlusSupConLoss "
+            f"(temperature={temperature}, supcon_weight={supcon_weight})"
+        )
+        return CrossEntropyPlusSupConLoss(
+            temperature=temperature,
+            supcon_weight=supcon_weight,
+        ), loss_name
+
+    raise ValueError(
+        f"Unknown loss function: {loss_name}. "
+        f"Supported: 'cross_entropy', 'ce_supcon'."
+    )
+
+
+class CrossEntropyPlusSupConLoss(nn.Module):
+    """
+    Combined objective for supervised contrastive learning:
+      - CE loss on classifier logits (average across 2 views)
+      - Supervised Contrastive (SupCon) loss on embedding features (2 views)
+
+    Expected model outputs during training:
+      forward((out_view1, out_view2), labels)
+    Each out_* should be a dict with:
+      - 'logits': [B, C]
+      - 'features': [B, D]
+
+    During testing, we support forward(out, labels) and only compute CE
+    (SupCon term is not computed because there is only one view).
+    """
+
+    def __init__(self, temperature: float = 0.07, supcon_weight: float = 1.0):
+        super().__init__()
+        self.temperature = temperature
+        self.supcon_weight = supcon_weight
+        self.ce_loss = nn.CrossEntropyLoss()
+
+    def _extract_logits_and_features(self, outputs):
+        if isinstance(outputs, dict):
+            logits = outputs["logits"]
+            features = outputs["features"]
         else:
-            logging.info("  Using CrossEntropyLossForDictOutput (handles dict model outputs)")
-            return CrossEntropyLossForDictOutput(), loss_name
-    else:
-        raise ValueError(f"Unknown loss function: {loss_name}. "
-                        f"Currently only 'cross_entropy' is supported for distillation.")
+            # Fallback: treat outputs as logits only.
+            logits = outputs
+            features = None
+        return logits, features
+
+    def _supcon_loss_two_views(self, features1, features2, labels):
+        """
+        Two-view SupCon loss (Khosla et al.).
+
+        Args:
+          features1: [B, D]
+          features2: [B, D]
+          labels: [B] class indices
+        """
+        if features1 is None or features2 is None:
+            # If features aren't available, contrastive term is undefined.
+            device = labels.device
+            return torch.zeros((), device=device, dtype=torch.float32) + 0.0
+
+        # [2B, D]
+        z = torch.cat([features1, features2], dim=0)
+        z = F.normalize(z, dim=1)
+
+        # [2B]
+        labels_2v = torch.cat([labels, labels], dim=0)
+
+        # Similarity matrix: [2B, 2B]
+        sim = torch.matmul(z, z.T) / self.temperature
+
+        # Stability: subtract row-wise max from logits before exp/log.
+        sim_max, _ = sim.max(dim=1, keepdim=True)
+        sim = sim - sim_max.detach()
+
+        # Mask out self-contrast.
+        n = z.shape[0]
+        device = z.device
+        self_mask = torch.eye(n, dtype=torch.bool, device=device)
+
+        exp_sim = torch.exp(sim).masked_fill(self_mask, 0.0)
+        denom = exp_sim.sum(dim=1, keepdim=True)  # [2B, 1]
+        log_prob = sim - torch.log(denom + 1e-12)  # [2B, 2B]
+
+        # Positive mask: same label, exclude self.
+        labels_row = labels_2v.unsqueeze(0)  # [1, 2B]
+        labels_col = labels_2v.unsqueeze(1)  # [2B, 1]
+        positive_mask = (labels_col == labels_row) & (~self_mask)  # [2B, 2B]
+
+        positive_count = positive_mask.sum(dim=1)  # [2B]
+        positive_count_f = positive_count.to(log_prob.dtype)
+
+        # Mean over positives for each anchor i.
+        mean_log_prob_pos = (log_prob * positive_mask.to(log_prob.dtype)).sum(dim=1) / torch.clamp(
+            positive_count_f, min=1.0
+        )  # [2B]
+
+        loss_per_anchor = -mean_log_prob_pos
+
+        valid = (positive_count > 0).to(loss_per_anchor.dtype)
+        denom_valid = valid.sum().clamp(min=1.0)
+        return (loss_per_anchor * valid).sum() / denom_valid
+
+    def forward(self, model_output, target):
+        # Training mode: (out1, out2)
+        if isinstance(model_output, (tuple, list)) and len(model_output) == 2:
+            out1, out2 = model_output
+            logits1, features1 = self._extract_logits_and_features(out1)
+            logits2, features2 = self._extract_logits_and_features(out2)
+
+            ce = 0.5 * (self.ce_loss(logits1, target) + self.ce_loss(logits2, target))
+            supcon = self._supcon_loss_two_views(features1, features2, target)
+            return ce + self.supcon_weight * supcon
+
+        # Testing mode: only one set of outputs => CE only.
+        logits, _ = self._extract_logits_and_features(model_output)
+        return self.ce_loss(logits, target)
 
 
 def convert_to_one_hot(labels, num_classes):

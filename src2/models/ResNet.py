@@ -714,33 +714,6 @@ def build_multimodal_resnet(model_name, modality_names, location_names,
 # Configurable ResNet for Student Models (Distillation / Compression)
 # =============================================================================
 
-class EarlyExitBranch(nn.Module):
-    """
-    Early exit classifier branch: Global Average Pooling -> Linear.
-    
-    Lightweight classifier attached at intermediate network stages for
-    early exit inference and distillation training.
-    
-    Args:
-        in_channels: Number of feature map channels at the exit point
-        num_classes: Number of output classes
-    """
-    def __init__(self, in_channels, num_classes):
-        super().__init__()
-        self.pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.classifier = nn.Linear(in_channels, num_classes)
-    
-    def forward(self, x):
-        """
-        Args:
-            x: Feature map tensor [B, C, H, W]
-        Returns:
-            logits: [B, num_classes]
-        """
-        x = self.pool(x)
-        x = torch.flatten(x, 1)
-        return self.classifier(x)
-
 
 class ConfigurableResNet(nn.Module):
     """
@@ -764,37 +737,32 @@ class ConfigurableResNet(nn.Module):
         stem_stride: Stride for stem conv (default: 1)
         use_maxpool: Whether to use maxpool after stem (default: False)
         dropout_ratio: Dropout probability for BasicBlocks
-        early_exit_layers: List of stage indices where early exits are placed.
-                          e.g., [1, 2] means exits after stage 1 and stage 2.
-    
+
     Example:
         >>> model = ConfigurableResNet(
         ...     layers=[1, 1, 1, 1],
         ...     filter_sizes=[16, 32, 48, 96],
         ...     in_channels=6, num_classes=10, fc_dim=64,
-        ...     early_exit_layers=[1, 2]
         ... )
         >>> x = torch.randn(4, 6, 128, 128)
         >>> out = model(x)
         >>> out['logits'].shape   # torch.Size([4, 10])
-        >>> len(out['exits'])     # 2
     """
     
     def __init__(self, layers, filter_sizes, in_channels=3, num_classes=10,
                  fc_dim=256, stem_channels=None, stem_kernel=3, stem_stride=1,
-                 use_maxpool=False, dropout_ratio=0, early_exit_layers=None):
+                 use_maxpool=False, dropout_ratio=0):
         super().__init__()
-        
+
         assert len(layers) == len(filter_sizes), \
             f"layers ({len(layers)}) and filter_sizes ({len(filter_sizes)}) must have same length"
-        
+
         self.layers_config = layers
         self.filter_sizes = filter_sizes
         self.num_stages = len(layers)
         self.dropout_ratio = dropout_ratio
         self.num_classes = num_classes
         self.fc_dim = fc_dim
-        self.early_exit_layers = sorted(early_exit_layers or [])
         
         # Stem
         if stem_channels is None:
@@ -831,14 +799,6 @@ class ConfigurableResNet(nn.Module):
             nn.ReLU(),
         )
         self.classifier = nn.Linear(fc_dim, num_classes)
-        
-        # Early exit branches
-        self.exit_branches = nn.ModuleDict()
-        for layer_idx in self.early_exit_layers:
-            assert 0 <= layer_idx < self.num_stages, \
-                f"early_exit layer {layer_idx} out of range [0, {self.num_stages})"
-            exit_channels = filter_sizes[layer_idx] * BasicBlock.expansion
-            self.exit_branches[str(layer_idx)] = EarlyExitBranch(exit_channels, num_classes)
         
         # Initialize weights
         self._initialize_weights()
@@ -897,35 +857,27 @@ class ConfigurableResNet(nn.Module):
     
     def forward(self, x):
         """
-        Forward pass returning dict with logits, early exit outputs, and features.
-        
+        Forward pass returning dict with logits and features.
+
         Args:
             x: Input tensor [B, C, H, W]
-        
+
         Returns:
             dict with keys:
                 'logits': [B, num_classes] final classifier output
-                'exits': list of [B, num_classes] early exit outputs (ordered by stage)
                 'features': [B, fc_dim] final embedding before classifier
         """
         stage_features = self.forward_stages(x)
-        
-        # Collect early exit outputs
-        exits = []
-        for layer_idx in self.early_exit_layers:
-            exit_logits = self.exit_branches[str(layer_idx)](stage_features[layer_idx])
-            exits.append(exit_logits)
-        
+
         # Final head
         final_feat = stage_features[-1]
         final_feat = self.avgpool(final_feat)
         final_feat = torch.flatten(final_feat, 1)
         features = self.embed(final_feat)
         logits = self.classifier(features)
-        
+
         return {
             'logits': logits,
-            'exits': exits,
             'features': features,
         }
     
@@ -936,14 +888,14 @@ class ConfigurableResNet(nn.Module):
 
 class SingleModalResNet(nn.Module):
     """
-    Single-modality ResNet with configurable architecture and early exits.
-    
+    Single-modality ResNet with configurable architecture.
+
     Thin wrapper around ConfigurableResNet that handles the dict-format input
     used by the data pipeline. Extracts one modality from one location and
     passes it through the backbone.
-    
+
     Input format: freq_x[location][modality] = tensor [B, C, H, W]
-    
+
     Args:
         modality_name: Which modality to use (e.g., 'audio' or 'seismic')
         location_name: Which location to use (e.g., 'shake')
@@ -952,35 +904,32 @@ class SingleModalResNet(nn.Module):
         layers: List of BasicBlock counts per stage (e.g., [1,1,1,1])
         filter_sizes: List of channel counts per stage (e.g., [16,32,48,96])
         fc_dim: Embedding dimension before classifier
-        early_exit_layers: List of stage indices for early exits (e.g., [1, 2])
         stem_channels: Channels after stem conv (default: filter_sizes[0])
         stem_kernel: Stem conv kernel size (default: 3)
         stem_stride: Stem conv stride (default: 1)
         use_maxpool: Whether to use maxpool after stem (default: False)
         dropout_ratio: Dropout probability
-    
+
     Example:
         >>> model = SingleModalResNet(
         ...     modality_name='audio', location_name='shake',
         ...     in_channels=6, num_classes=10,
         ...     layers=[1,1,1,1], filter_sizes=[16,32,48,96],
-        ...     fc_dim=64, early_exit_layers=[1, 2]
+        ...     fc_dim=64,
         ... )
         >>> inputs = {'shake': {'audio': torch.randn(4, 6, 128, 128)}}
         >>> out = model(inputs)
         >>> out['logits'].shape   # [4, 10]
-        >>> len(out['exits'])     # 2
     """
     
     def __init__(self, modality_name, location_name, in_channels,
                  num_classes, layers, filter_sizes, fc_dim=256,
-                 early_exit_layers=None, stem_channels=None, stem_kernel=3,
+                 stem_channels=None, stem_kernel=3,
                  stem_stride=1, use_maxpool=False, dropout_ratio=0):
         super().__init__()
         
         self.modality_name = modality_name
         self.location_name = location_name
-        
         self.backbone = ConfigurableResNet(
             layers=layers,
             filter_sizes=filter_sizes,
@@ -992,7 +941,6 @@ class SingleModalResNet(nn.Module):
             stem_stride=stem_stride,
             use_maxpool=use_maxpool,
             dropout_ratio=dropout_ratio,
-            early_exit_layers=early_exit_layers,
         )
     
     def forward(self, freq_x):
@@ -1002,7 +950,6 @@ class SingleModalResNet(nn.Module):
         
         Returns:
             dict: {'logits': [B, num_classes],
-                   'exits': list of [B, num_classes],
                    'features': [B, fc_dim]}
         """
         x = freq_x[self.location_name][self.modality_name]
