@@ -119,7 +119,7 @@ class MelPreprocessor:
                 power = fft.abs() ** 2
                 # Step 3: apply mel filterbank -> [B, C, segments, n_mel]
                 # filterbank: [n_mel, n_fft//2+1], so power @ filterbank.T
-                mel = power @ self.filterbank.T
+                mel = power @ self.filterbank.to(device=power.device, dtype=power.dtype).T
                 # Step 4: log with epsilon floor
                 log_mel = torch.log(mel + 1e-6)
                 mel_loc_inputs[location][modality] = log_mel
