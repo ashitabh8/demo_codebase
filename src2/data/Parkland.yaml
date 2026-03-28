@@ -34,6 +34,7 @@ loss_name: "cross_entropy"
 
 repetition: 3
 
+batch_size_pretrain: 256
 batch_size: 128
 num_workers: 4
 use_balanced_sampling: True
@@ -101,9 +102,12 @@ models:
                 filter_sizes: [64, 128, 256, 512]  # Standard ResNet18 filters
                 stem_kernel: 7
                 stem_stride: 2
+                stem_channels: null
                 use_maxpool: true
                 dropout_ratio: 0.2
                 fc_dim: 512
+                proj_hidden_dim: 256
+                proj_out_dim: 128
                 early_exits: []  # No early exits for teacher
                 weight_only_qat: false
                 weight_only_bits: 2
@@ -117,9 +121,12 @@ models:
                 filter_sizes: [16, 32, 48, 96, 48, 32, 16]
                 stem_kernel: 7
                 stem_stride: 2
+                stem_channels: null
                 use_maxpool: true
                 dropout_ratio: 0.1
                 fc_dim: 64
+                proj_hidden_dim: 256
+                proj_out_dim: 128
                 early_exits: []
                 weight_only_qat: false
                 weight_only_bits: 2
@@ -135,6 +142,7 @@ models:
                 strides: [1, 2, 2, 2]
                 stem_kernel: 3
                 stem_stride: 1
+                stem_channels: null
                 dropout_ratio: 0.1
                 fc_dim: 64
                 early_exits: [1, 2]
@@ -152,6 +160,8 @@ models:
                 recurrent_layers: 1
                 fc_dim: 128
                 dropout_ratio: 0.2
+                proj_hidden_dim: 256
+                proj_out_dim: 128
 
         # Student 4: Audio-only DeepSense (standard — mirrors original config)
         student_audio_deepsense:
@@ -165,6 +175,8 @@ models:
                 recurrent_layers: 2
                 fc_dim: 512
                 dropout_ratio: 0.2
+                proj_hidden_dim: 256
+                proj_out_dim: 128
 
         # Student 6: Audio-only DeepSense Depthwise Large
         # Larger capacity version of deepsense_dw:
@@ -191,6 +203,8 @@ models:
                 # Head
                 fc_dim: 512
                 dropout_ratio: 0.35
+                proj_hidden_dim: 256
+                proj_out_dim: 128
 
         student_audio_deepsense_dw_large_mel:
                 model_source: "create_single_modal_model"
@@ -210,7 +224,33 @@ models:
                 # Head
                 fc_dim: 512
                 dropout_ratio: 0.35
-              
+                proj_hidden_dim: 256
+                proj_out_dim: 128
+
+        # DeepSense DW large mel + BiGRU after temporal DW stack + 2-layer MLP head (output_dims).
+        # Same freq/temporal DW spec as student_audio_deepsense_dw_large_mel; ~35MB float32 budget.
+        student_audio_deepsense_dw_large_mel_bigru:
+                model_source: "create_single_modal_model"
+                model_type: "deepsense_dw"
+                active_modality: "audio"
+                in_channels: 1
+                in_spectrum_len: 80
+                channels_freq:     [128, 256, 512, 512, 512]
+                kernel_sizes_freq: [[1, 5], [1, 3], [1, 3], [1, 3], [1, 3]]
+                strides_freq:      [[1, 2], [1, 2], [1, 1], [1, 1], [1, 1]]
+                temporal_channels: 512
+                num_temporal_layers: 6
+                temporal_kernel: 3
+                use_bigru: True
+                # BiGRU hidden per direction; 192*2=384 -> first MLP Linear sees 384 ch.
+                # (256+2 layers would be ~37MB float32; 192+2 layers ~34MB.)
+                recurrent_dim: 192
+                recurrent_layers: 2
+                output_dims: [512, 256]
+                fc_dim: 512
+                dropout_ratio: 0.35
+                proj_hidden_dim: 256
+                proj_out_dim: 128
 
         # Student 5: Audio-only DeepSense Depthwise (CMSIS-NN friendly, no GRU)
         # Freq conv: 4-layer DW-sep, finer initial compression ([1,20]/stride-10 vs [1,80]/stride-80)
@@ -234,6 +274,8 @@ models:
                 # Head
                 fc_dim: 512
                 dropout_ratio: 0.2
+                proj_hidden_dim: 256
+                proj_out_dim: 128
 
         # Student 7: Mel-optimized DeepSense Depthwise (80 Mel bins, single-channel magnitude)
         # Uses Mel spectrogram input: in_channels=1 (magnitude), in_spectrum_len=80 (Mel bins).
@@ -261,6 +303,8 @@ models:
                 # Head
                 fc_dim: 512
                 dropout_ratio: 0.2
+                proj_hidden_dim: 256
+                proj_out_dim: 128
 
 # =============================================================================
 # Training Config Zoo: Reusable Training Recipes
@@ -362,6 +406,92 @@ training_configs:
                         name: "cosine"
                         warmup_prefix: True
                         warmup_epochs: 0
+         
+        ssl_pretrain_ce:
+          type: "ssl_pretrain"
+          epochs: 50
+          loss_name: "nt_xent"
+          nt_xent_temperature: 0.2
+          pretrain_subset_ratio: 1.0
+          pretrain_subset_mode: "global"
+          pretrain_seed: 42
+          viz_every_n_epochs: 10
+          optimizer:
+            name: "AdamW"
+            start_lr: 0.0003
+            warmup_lr: 0.000001
+            min_lr: 0.000001
+            clip_grad: 5.0
+            weight_decay: 0.05
+          lr_scheduler:
+            name: "cosine"
+            warmup_prefix: True
+            warmup_epochs: 10
+            decay_epochs: 2
+            decay_rate: 0.2
+
+        finetune_ce:
+          type: "finetune"
+          epochs: 100
+          loss_name: "cross_entropy"
+          freeze_backbone: True
+          optimizer:
+            name: "AdamW"
+            start_lr: 0.0001
+            warmup_lr: 0.000001
+            min_lr: 0.000001
+            clip_grad: 5.0
+            weight_decay: 0.05
+          lr_scheduler:
+            name: "cosine"
+            warmup_prefix: True
+            warmup_epochs: 0
+            decay_epochs: 5
+            decay_rate: 0.5
+
+        finetune_supcon:
+                type: "finetune"
+                epochs: 100
+                loss_name: "ce_supcon"
+                supcon_temperature: 0.07
+                supcon_weight: 1.0
+                freeze_backbone: True
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0001
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 0
+                        decay_epochs: 5
+                        decay_rate: 0.5
+
+        finetune_supcon_difflr:
+                type: "finetune"
+                epochs: 100
+                loss_name: "ce_supcon"
+                supcon_temperature: 0.07
+                supcon_weight: 1.0
+                freeze_backbone: False
+                backbone_lr_scale: 0.01
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0003
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 5
+                        decay_epochs: 5
+                        decay_rate: 0.5
+        
 
 # =============================================================================
 # Experiments
@@ -447,6 +577,87 @@ experiments:
                 fixed_augmenters:
                         time_augmenters: ["scaling", "time_mask", "time_mask"]
                         freq_augmenters: ["freq_mask", "freq_mask"]
+
+       
+        pretrain_audio_resnet:
+                model: "teacher_audio_resnet18"
+                training: "ssl_pretrain_ce"
+                # fixed_augmenters:
+                #   time_augmenters: ["time_mask"]
+                #   freq_augmenters: ["freq_mask"]
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
+        pretrain_audio_student_resnet:
+                model: "student_audio_resnet"
+                training: "ssl_pretrain_ce"
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "negation"]
+                        freq_augmenters: ["freq_mask", "phase_shift"]
+
+        pretrain_audio_deepsense_dw_large_mel:
+                model: "student_audio_deepsense_dw_large_mel"
+                training: "ssl_pretrain_ce"
+                preprocess_mode: "mel"
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
+        pretrain_audio_deepsense_dw_large_mel_bigru:
+                model: "student_audio_deepsense_dw_large_mel_bigru"
+                training: "ssl_pretrain_ce"
+                preprocess_mode: "mel"
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
+        finetune_audio_deepsense_dw_large_mel_bigru:
+                model: "student_audio_deepsense_dw_large_mel_bigru"
+                training: "finetune_supcon"
+                preprocess_mode: "mel"
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask"]
+                checkpoint_path: "/home/misra8/demo_codebase/src2/experiments/20260328_035035_pretrain_pretrain_audio_deepsense_dw_large_mel_bigru/models/best_pretrain_model.pth"
+
+        finetune_audio_resnet_from_pretrain:
+                model: "teacher_audio_resnet18"
+                training: "finetune_supcon"
+                fixed_augmenters:
+                        time_augmenters: ["time_mask"]
+                        freq_augmenters: ["freq_mask"]
+                checkpoint_path: "/home/misra8/demo_codebase/src2/experiments/20260328_031304_pretrain_pretrain_audio_resnet/models/best_pretrain_model.pth"
+
+        finetune_audio_deepsense_dw_large_mel:
+                model: "student_audio_deepsense_dw_large_mel"
+                training: "finetune_ce"
+                preprocess_mode: "mel"
+                fixed_augmenters:
+                        time_augmenters: ["time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
+                checkpoint_path: "/home/misra8/demo_codebase/src2/experiments/20260327_211014_pretrain_pretrain_audio_deepsense_dw_large_mel/models/best_pretrain_model.pth"
+
+        finetune_audio_deepsense_dw_large_mel_supcon:
+                model: "student_audio_deepsense_dw_large_mel"
+                training: "finetune_supcon"
+                preprocess_mode: "mel"
+                fixed_augmenters:
+                        # time_augmenters: ["time_mask"]
+                        # freq_augmenters: ["freq_mask"]
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask", "freq_mask"]
+                checkpoint_path: "/home/misra8/demo_codebase/src2/experiments/20260327_211014_pretrain_pretrain_audio_deepsense_dw_large_mel/models/best_pretrain_model.pth"
+
+        finetune_audio_deepsense_dw_large_mel_supcon_difflr:
+                model: "student_audio_deepsense_dw_large_mel"
+                training: "finetune_supcon_difflr"
+                preprocess_mode: "mel"
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask", "freq_mask"]
+                checkpoint_path: "/home/misra8/demo_codebase/src2/experiments/20260327_211014_pretrain_pretrain_audio_deepsense_dw_large_mel/models/best_pretrain_model.pth"
 
 # quantization:
 #         enable: False
@@ -817,7 +1028,7 @@ permutation:
 
 scaling:
         prob: 0.8
-        std: 0.2
+        std: 0.35
 
 time_warp:
         prob: 0.5
@@ -837,11 +1048,11 @@ channel_shuffle:
 
 freq_mask:
         prob: 0.8 
-        mask_ratio: 0.35
+        mask_ratio: 0.2
 
 time_mask:
         prob: 0.8
-        mask_ratio: 0.3
+        mask_ratio: 0.4
 
 phase_shift:
         prob: 0.8

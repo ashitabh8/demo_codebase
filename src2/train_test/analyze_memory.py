@@ -37,6 +37,7 @@ def analyze_model(config, model_name, unit="KB"):
     print(f"Model: {model_name}")
     print(f"{'=' * 60}")
 
+    config["models"][model_name]["pretrain_mode"] = False
     model = create_single_modal_model(config, model_name)
     model.eval()
 

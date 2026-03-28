@@ -14,9 +14,9 @@ Key differences from DeepSenseLatest.py
 ----------------------------------------
 1. DSDWConvLayer: depthwise Conv2d + pointwise Conv2d instead of full Conv2d.
    Reduces parameters ~(in_ch / out_ch)× vs standard conv at equal channels.
-2. No GRU: replaced by DSTemporalDWLayer stack over the interval dimension.
-   CMSIS-NN has arm_depthwise_conv_s8 but no GRU primitive; temporal DW-sep
-   conv avoids hidden state and maps directly to ARM kernels.
+2. Temporal modeling: default path uses DSTemporalDWLayer stack only (CMSIS-NN
+   friendly). Optional `use_bigru=True` adds a bidirectional GRU after the DW
+   temporal stack (see RecurrentBlock) for stronger sequence modeling.
 3. temporal_channels is independent of channels_freq[-1]: spectrum_proj maps
    from channels_freq[-1] * freq_out → temporal_channels, giving separate
    control over freq depth and temporal depth.
@@ -30,6 +30,8 @@ SingleModalDeepSenseDW     : thin wrapper unpacking freq_x[location][modality]
 """
 import torch
 import torch.nn as nn
+
+from models.RecurrentModule import RecurrentBlock
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +130,32 @@ def _compute_freq_out_dw(in_spectrum_len: int, kernel_sizes, strides) -> int:
     return freq
 
 
+def _build_output_dims_mlp(
+    in_dim: int,
+    output_dims,
+    dropout_ratio: float,
+) -> nn.Sequential:
+    """
+    Stack of Linear layers with ReLU between (no ReLU after last layer).
+    output_dims length = number of linear layers; final dim is embedding size.
+    """
+    if not output_dims:
+        raise ValueError("output_dims must be a non-empty list of positive ints")
+    parts = []
+    d_in = in_dim
+    n = len(output_dims)
+    for i, d_out in enumerate(output_dims):
+        if d_out < 1:
+            raise ValueError(f"output_dims entries must be >= 1, got {d_out}")
+        parts.append(nn.Linear(d_in, d_out))
+        if i < n - 1:
+            parts.append(nn.ReLU())
+            if dropout_ratio > 0:
+                parts.append(nn.Dropout(p=dropout_ratio))
+        d_in = d_out
+    return nn.Sequential(*parts)
+
+
 # ---------------------------------------------------------------------------
 # Backbone
 # ---------------------------------------------------------------------------
@@ -151,11 +179,14 @@ class DeepSenseDepthwiseBackbone(nn.Module):
     DW temporal stack (num_temporal_layers layers, channels=temporal_channels):
         → [B, temporal_channels, I]
 
-    Global avg pool:
+    Optional BiGRU (use_bigru=True): RecurrentBlock mean-pools over intervals
+        → [B, recurrent_dim * 2]
+
+    Otherwise global avg pool over intervals:
         → [B, temporal_channels]
 
-    sample_embd_layer (Linear + ReLU):
-        → [B, fc_dim]                   ← 'features'
+    Head: either output_dims MLP (Linear + ReLU between layers) or
+    sample_embd_layer (Linear + ReLU) to fc_dim  → 'features'
 
     class_layer (Linear):
         → [B, num_classes]              ← 'logits'
@@ -178,7 +209,8 @@ class DeepSenseDepthwiseBackbone(nn.Module):
 
     Returns
     -------
-    dict: {'logits': [B, num_classes], 'features': [B, fc_dim]}
+    dict: {'logits': [B, num_classes], 'features': [B, embed_dim]}
+          embed_dim is output_dims[-1] if output_dims set, else fc_dim.
     """
 
     def __init__(
@@ -194,6 +226,13 @@ class DeepSenseDepthwiseBackbone(nn.Module):
         temporal_kernel: int,
         fc_dim: int,
         dropout_ratio: float = 0.0,
+        pretrain_mode: bool = False,
+        proj_hidden_dim: int = 256,
+        proj_out_dim: int = 128,
+        use_bigru: bool = False,
+        recurrent_dim: int = 256,
+        recurrent_layers: int = 2,
+        output_dims=None,
     ):
         super().__init__()
 
@@ -225,14 +264,46 @@ class DeepSenseDepthwiseBackbone(nn.Module):
             )
         self.temporal_stack = nn.ModuleList(temporal_layers)
 
-        # Embedding projection
-        self.sample_embd_layer = nn.Sequential(
-            nn.Linear(temporal_channels, fc_dim),
-            nn.ReLU(),
-        )
+        self.use_bigru = use_bigru
+        self.recurrent_layer = None
+        self.output_dims_mlp = None
+        self.sample_embd_layer = None
 
-        # Classifier
-        self.class_layer = nn.Linear(fc_dim, num_classes)
+        if use_bigru:
+            if recurrent_layers < 1:
+                raise ValueError(f"recurrent_layers must be >= 1, got {recurrent_layers}")
+            gru_dropout = dropout_ratio if recurrent_layers > 1 else 0.0
+            self.recurrent_layer = RecurrentBlock(
+                in_channel=temporal_channels,
+                out_channel=recurrent_dim,
+                num_layers=recurrent_layers,
+                dropout_ratio=gru_dropout,
+            )
+            mlp_in = recurrent_dim * 2
+        else:
+            mlp_in = temporal_channels
+
+        if output_dims is not None:
+            self.output_dims_mlp = _build_output_dims_mlp(
+                mlp_in, output_dims, dropout_ratio
+            )
+            embed_dim = output_dims[-1]
+        else:
+            self.sample_embd_layer = nn.Sequential(
+                nn.Linear(mlp_in, fc_dim),
+                nn.ReLU(),
+            )
+            embed_dim = fc_dim
+
+        self.class_layer = nn.Linear(embed_dim, num_classes)
+
+        self.pretrain_mode = pretrain_mode
+        if self.pretrain_mode:
+            self.projection_head = nn.Sequential(
+                nn.Linear(embed_dim, proj_hidden_dim),
+                nn.ReLU(inplace=True),
+                nn.Linear(proj_hidden_dim, proj_out_dim),
+            )
 
     def forward(self, x: torch.Tensor) -> dict:
         """
@@ -255,13 +326,21 @@ class DeepSenseDepthwiseBackbone(nn.Module):
         for layer in self.temporal_stack:
             x = layer(x)
 
-        # Global avg pool over intervals: [B, T, I] → [B, T]
-        x = x.mean(dim=-1)
+        if self.use_bigru:
+            x, _ = self.recurrent_layer(x)
+        else:
+            x = x.mean(dim=-1)
 
-        # Embedding + classify
-        features = self.sample_embd_layer(x)
+        if self.output_dims_mlp is not None:
+            features = self.output_dims_mlp(x)
+        else:
+            features = self.sample_embd_layer(x)
+
+        if self.pretrain_mode:
+            projection = self.projection_head(features)
+            return {"features": features, "projection": projection}
+
         logits = self.class_layer(features)
-
         return {'logits': logits, 'features': features}
 
 
@@ -295,6 +374,13 @@ class SingleModalDeepSenseDW(nn.Module):
         temporal_kernel: int,
         fc_dim: int,
         dropout_ratio: float = 0.0,
+        pretrain_mode: bool = False,
+        proj_hidden_dim: int = 256,
+        proj_out_dim: int = 128,
+        use_bigru: bool = False,
+        recurrent_dim: int = 256,
+        recurrent_layers: int = 2,
+        output_dims=None,
     ):
         super().__init__()
         self.modality_name = modality_name
@@ -312,6 +398,13 @@ class SingleModalDeepSenseDW(nn.Module):
             temporal_kernel=temporal_kernel,
             fc_dim=fc_dim,
             dropout_ratio=dropout_ratio,
+            pretrain_mode=pretrain_mode,
+            proj_hidden_dim=proj_hidden_dim,
+            proj_out_dim=proj_out_dim,
+            use_bigru=use_bigru,
+            recurrent_dim=recurrent_dim,
+            recurrent_layers=recurrent_layers,
+            output_dims=output_dims,
         )
 
     def forward(self, freq_x: dict) -> dict:

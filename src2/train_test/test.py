@@ -180,6 +180,7 @@ def main():
     # 10. Create Model
     # ========================================================================
     logging.info("\nCreating model...")
+    config["models"][model_name]["pretrain_mode"] = False
     model = create_single_modal_model(config, model_name)
     logging.info("Model created successfully")
     

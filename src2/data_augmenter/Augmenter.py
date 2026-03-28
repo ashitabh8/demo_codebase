@@ -37,7 +37,11 @@ class Augmenter:
         self.load_augmenters(args)
 
         # Setup preprocessing mode
-        preprocess_mode = args.dataset_config.get("preprocess_mode", "fft")
+        # preprocess_mode = args.dataset_config.get("preprocess_mode", "fft")
+        preprocess_mode = args.dataset_config["preprocess_mode"]
+        if preprocess_mode not in ["fft", "mel"]:
+            raise ValueError(f"Invalid preprocess_mode: {preprocess_mode}")
+        
         self.preprocess_mode = preprocess_mode
         if preprocess_mode == "mel":
             self.mel_preprocessor = MelPreprocessor(

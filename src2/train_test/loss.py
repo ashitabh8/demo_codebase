@@ -60,6 +60,140 @@ class CrossEntropyLossForDictOutput(nn.Module):
 
 
 # =============================================================================
+# NT-Xent Loss (SimCLR-style Self-Supervised Contrastive Loss)
+# =============================================================================
+
+class NTXentLoss(nn.Module):
+    """
+    NT-Xent Loss — Normalized Temperature-scaled Cross Entropy Loss.
+
+    This is the contrastive loss used in SimCLR (Chen et al., 2020) for
+    self-supervised representation learning.
+
+    Core idea
+    ---------
+    During self-supervised pretraining we don't have class labels. Instead we
+    teach the model to recognize that two different augmented views of the SAME
+    sample are similar, while views from DIFFERENT samples are dissimilar.
+
+    Given a batch of B samples:
+      - We augment each sample twice → proj1 [B, D] and proj2 [B, D]
+      - These form B "positive pairs": (proj1[i], proj2[i]) for each i
+      - All other 2B-2 items in the batch are "negatives" for that pair
+
+    The loss pulls each positive pair's embeddings together in the projected
+    space and pushes them away from all negatives.
+
+    Why project to a lower-dim space first?
+    ----------------------------------------
+    Applying contrastive loss directly on the backbone features would force
+    them to be *completely* invariant to augmentation, which hurts fine-tuning.
+    Instead we add a small projection MLP on top of the backbone, apply NT-Xent
+    in that projected space, and then discard the projection head after
+    pretraining. This lets the backbone features stay rich and informative.
+
+    Args:
+        temperature (float): Softmax temperature τ. Lower = sharper distribution,
+                             harder negatives. Default 0.5 is typical for SimCLR.
+    """
+
+    def __init__(self, temperature: float = 0.5):
+        super().__init__()
+        # Store temperature as a plain Python float.
+        # We don't register it as a buffer because it's a scalar hyperparameter,
+        # not something that needs to move between devices automatically.
+        self.temperature = temperature
+
+    def forward(self, proj1, proj2):
+        """
+        Compute NT-Xent loss for a batch of projection pairs.
+
+        Args:
+            proj1 (Tensor): Projected embeddings for augmentation view 1. Shape: [B, D]
+            proj2 (Tensor): Projected embeddings for augmentation view 2. Shape: [B, D]
+                            proj1[i] and proj2[i] are two views of the same sample.
+
+        Returns:
+            loss (Tensor): Scalar loss value.
+        """
+
+        # --- Step 1: Get the batch size ---
+        # B is how many original samples are in this batch.
+        B = proj1.shape[0]
+
+        # --- Step 2: Concatenate both views and L2-normalize ---
+        # We stack all 2B projections into one matrix.
+        # torch.cat([proj1, proj2], dim=0) → shape [2B, D]
+        #
+        # F.normalize(..., dim=1) makes every row a unit vector (length = 1).
+        # After normalization, the dot product of two rows equals their
+        # cosine similarity, which is what we want to compare.
+        #
+        # Result: z has shape [2B, D], each row is a unit vector.
+        z = F.normalize(torch.cat([proj1, proj2], dim=0), dim=1)  # [2B, D]
+
+        # --- Step 3: Compute all pairwise cosine similarities ---
+        # z @ z.T multiplies each row of z against every other row.
+        # Since rows are unit vectors, this gives the cosine similarity
+        # for every pair (i, j).
+        #
+        # We then divide by temperature τ. A small τ (e.g. 0.1) makes the
+        # distribution very peaked — the model has to be very confident about
+        # which pair is the positive. A large τ (e.g. 1.0) softens it.
+        #
+        # Result: sim has shape [2B, 2B]. sim[i, j] = cos_sim(z[i], z[j]) / τ
+        sim = torch.matmul(z, z.T) / self.temperature              # [2B, 2B]
+
+        # --- Step 4: Mask out the diagonal (self-similarity) ---
+        # The diagonal of sim[i, i] is always 1.0 / τ (a vector with itself).
+        # We don't want the model to "cheat" by treating itself as a positive,
+        # so we set the diagonal to a very large negative number (-1e9).
+        # After softmax this will become ~0, effectively removing those entries.
+        #
+        # torch.eye(2*B) makes the identity matrix: 1s on the diagonal, 0s elsewhere.
+        # We cast it to bool so masked_fill_ treats it as a binary mask.
+        #
+        # mask shape: [2B, 2B], True on the diagonal.
+        mask = torch.eye(2 * B, dtype=torch.bool, device=z.device)
+        sim.masked_fill_(mask, -1e9)  # sim is still [2B, 2B]
+
+        # --- Step 5: Build the positive-pair labels ---
+        # This is the elegant trick that avoids writing an explicit loop.
+        #
+        # After concatenation:
+        #   Rows 0 .. B-1 in z  → come from proj1 (view 1)
+        #   Rows B .. 2B-1 in z → come from proj2 (view 2)
+        #
+        # For row i in [0, B):     its positive pair is row i+B   (the other view of sample i)
+        # For row i in [B, 2B):    its positive pair is row i-B   (the other view of sample i)
+        #
+        # So the correct "class" for each row is:
+        #   [B, B+1, ..., 2B-1,   0, 1, ..., B-1]
+        #
+        # torch.arange(B, 2*B) produces [B, B+1, ..., 2B-1]  — positives for the first half
+        # torch.arange(0, B)   produces [0, 1, ..., B-1]      — positives for the second half
+        # cat them together to get a length-2B label vector.
+        #
+        # labels shape: [2B]
+        labels = torch.cat([torch.arange(B, 2 * B), torch.arange(0, B)]).to(z.device)
+
+        # --- Step 6: Cross-entropy loss ---
+        # F.cross_entropy(sim, labels) treats each row of sim as unnormalized
+        # logits over 2B "classes" and applies softmax + negative log-likelihood.
+        # The "correct class" for each row is given by labels (the positive pair index).
+        #
+        # Intuitively: for each anchor row i, out of all 2B rows, the model must
+        # assign the highest score to the one true positive. The loss is low when
+        # the positive pair has much higher similarity than all the negatives.
+        #
+        # The diagonal entries are already masked to -1e9 so they don't contribute
+        # to the softmax denominator.
+        #
+        # Returns a scalar — the mean loss over all 2B anchor rows.
+        return F.cross_entropy(sim, labels)
+
+
+# =============================================================================
 # Loss Factory Function
 # =============================================================================
 
@@ -107,9 +241,20 @@ def get_loss_function(training_config):
             supcon_weight=supcon_weight,
         ), loss_name
 
+    if loss_name == "nt_xent":
+        # NT-Xent is used for self-supervised pretraining (SimCLR-style).
+        # The temperature controls how sharply the softmax peaks around the
+        # positive pair — lower values make the task harder and typically
+        # yield better representations.
+        # We look up the temperature from the training config; if not set,
+        # we fall back to 0.5 (the SimCLR default).
+        temperature = float(training_config.get("nt_xent_temperature", 0.5))
+        logging.info(f"  Using NTXentLoss (temperature={temperature})")
+        return NTXentLoss(temperature=temperature), loss_name
+
     raise ValueError(
         f"Unknown loss function: {loss_name}. "
-        f"Supported: 'cross_entropy', 'ce_supcon'."
+        f"Supported: 'cross_entropy', 'ce_supcon', 'nt_xent'."
     )
 
 

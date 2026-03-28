@@ -10,46 +10,46 @@ sys.path.insert(0, str(src2_path))
 
 from models.ResNet import SingleModalResNet
 from models.ConvOnlyModels import SingleModalConvOnly
-from models.ResNetSimple import ResNetSimpleBackbone, SingleModalSimpleResNet, build_simple_resnet_from_config
+from models.ResNetSimple import (
+    ResNetSimpleBackbone,
+    SingleModalSimpleResNet,
+    build_simple_resnet_from_config,
+)
 from models.DeepSenseLatest import SingleModalDeepSense
 from models.DeepSenseDepthwise import SingleModalDeepSenseDW
-
-
 
 # =============================================================================
 # Student Model Factory for Distillation
 # =============================================================================
 
-def create_single_modal_model(config, model_config_key):
+
+def create_single_modal_model(config, model_name):
     """
     Create a single-modality model from config.
-    
+
     This factory creates unimodal models (ResNet or ConvOnly) that can serve as
     either teachers or students in distillation pipelines. The model accepts
     dict-format input but only processes one modality.
-    
+
     Input format: freq_x[location][modality] = tensor [B, C, H, W]
-    
+
     Returns a model whose forward() returns a dict:
         {'logits': [B, num_classes],
          'exits': [exit_0, exit_1, ...],
          'features': [B, fc_dim]}
-    
+
     Config validation:
         - Uses strict dictionary access [] to raise KeyError for missing required keys
-        - Only 2 keys allow .get() with defaults:
-          1. stem_channels: defaults to None (model will infer from filter_sizes)
-          2. kernel_sizes/strides (ConvOnly): defaults to None (model has internal defaults)
-        - All other keys MUST be explicitly present in the config
-    
+        - All keys MUST be explicitly present in the config
+
     Args:
         config: Full dataset configuration dictionary (e.g., loaded from ACIDS.yaml)
         model_config_key: Key in config["models"] for model settings
                          (e.g., 'teacher_audio_resnet18', 'student_audio_resnet')
-    
+
     Returns:
         model: SingleModalResNet or SingleModalConvOnly instance
-    
+
     Example:
         >>> import yaml
         >>> with open('src2/data/ACIDS.yaml') as f:
@@ -61,41 +61,41 @@ def create_single_modal_model(config, model_config_key):
         >>> student_out = student(inputs)
     """
     # Model config is stored under `config["models"]` in our YAMLs.
-    model_cfg = config["models"][model_config_key]
+    model_cfg = config["models"][model_name]
     model_type = model_cfg["model_type"]
 
     # DeepSense variants have their own factories — dispatch early
     if model_type == "deepsense":
-        return create_deepsense(config, model_config_key)
+        return create_deepsense(config, model_name)
     if model_type == "deepsense_dw":
-        return create_deepsense_dw(config, model_config_key)
+        return create_deepsense_dw(config, model_name)
 
     # Get the single active modality and location
     active_modality = model_cfg["active_modality"]
     location_names = config["location_names"]
-    
+
     if len(location_names) != 1:
         raise ValueError(
             f"Single-modal models expect exactly one location, got {location_names}"
         )
     location_name = location_names[0]
-    
+
     # Look up input channels for this modality
     all_channels = config["loc_mod_in_freq_channels"]
     in_channels = all_channels[location_name][active_modality]
-    
+
     # Classification parameters
     task_cfg = config["vehicle_classification"]
     num_classes = task_cfg["num_classes"]
-    
+
     # Common parameters
     fc_dim = model_cfg["fc_dim"]
     dropout_ratio = model_cfg["dropout_ratio"]
     stem_kernel = model_cfg["stem_kernel"]
     stem_stride = model_cfg["stem_stride"]
-    stem_channels = model_cfg.get("stem_channels", None)  # OK to be None
-    
-    logging.info(f"Creating single-modal model: {model_type} ({model_config_key})")
+    stem_channels = model_cfg["stem_channels"]
+
+    logging.info(f"Creating single-modal model: {model_type} ({model_name})")
     logging.info(f"  Modality: {active_modality}")
     logging.info(f"  Location: {location_name}")
     logging.info(f"  Input channels: {in_channels}")
@@ -106,10 +106,16 @@ def create_single_modal_model(config, model_config_key):
         layers = model_cfg["layers"]
         filter_sizes = model_cfg["filter_sizes"]
         use_maxpool = model_cfg["use_maxpool"]
-        
+
         logging.info(f"  ResNet layers: {layers}")
         logging.info(f"  Filter sizes: {filter_sizes}")
-        
+
+        print(f"model_cfg: {model_cfg}")  # DEBUG: print model_cfg
+        # breakpoint()
+        pretrain_mode = model_cfg["pretrain_mode"]
+        proj_hidden_dim = model_cfg["proj_hidden_dim"]
+        proj_out_dim = model_cfg["proj_out_dim"]
+
         model = SingleModalResNet(
             modality_name=active_modality,
             location_name=location_name,
@@ -123,13 +129,16 @@ def create_single_modal_model(config, model_config_key):
             stem_stride=stem_stride,
             use_maxpool=use_maxpool,
             dropout_ratio=dropout_ratio,
+            pretrain_mode=pretrain_mode,
+            proj_hidden_dim=proj_hidden_dim,
+            proj_out_dim=proj_out_dim,
         )
-    
+
     elif model_type in ("student_convonly", "convonly"):
         num_blocks = model_cfg["num_blocks"]
         filter_sizes = model_cfg["filter_sizes"]
-        kernel_sizes = model_cfg.get("kernel_sizes", None)  # OK to be None (has internal default)
-        strides = model_cfg.get("strides", None)  # OK to be None (has internal default)
+        kernel_sizes = model_cfg["kernel_sizes"]
+        strides = model_cfg["strides"]
 
         logging.info(f"  ConvOnly blocks: {num_blocks}")
         logging.info(f"  Filter sizes: {filter_sizes}")
@@ -158,24 +167,30 @@ def create_single_modal_model(config, model_config_key):
     #         modality_name=active_modality,
     #         backbone=backbone,
     #     )
-    
+
     else:
         raise ValueError(
             f"Unknown model type: '{model_type}'. "
             f"Choose from: 'student_resnet', 'resnet', 'student_convonly', 'convonly', "
             f"'deepsense', 'deepsense_dw'"
         )
-    
+
     # Log model size
     total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    trainable_params = sum(
+        p.numel() for p in model.parameters() if p.requires_grad
+    )
     model_size_kb = total_params * 4 / 1024
-    
+
     logging.info(f"Model created successfully!")
-    logging.info(f"  Total parameters: {total_params:,} ({total_params / 1e6:.4f}M)")
+    logging.info(
+        f"  Total parameters: {total_params:,} ({total_params / 1e6:.4f}M)"
+    )
     logging.info(f"  Trainable parameters: {trainable_params:,}")
-    logging.info(f"  Estimated size (float32): {model_size_kb:.1f} KB ({model_size_kb / 1024:.2f} MB)")
-    
+    logging.info(
+        f"  Estimated size (float32): {model_size_kb:.1f} KB ({model_size_kb / 1024:.2f} MB)"
+    )
+
     return model
 
 
@@ -208,8 +223,12 @@ def create_deepsense(config, model_config_key):
         )
     location_name = location_names[0]
 
-    in_channels = config["loc_mod_in_freq_channels"][location_name][active_modality]
-    in_spectrum_len = config["loc_mod_spectrum_len"][location_name][active_modality]
+    in_channels = config["loc_mod_in_freq_channels"][location_name][
+        active_modality
+    ]
+    in_spectrum_len = config["loc_mod_spectrum_len"][location_name][
+        active_modality
+    ]
     num_classes = config["vehicle_classification"]["num_classes"]
 
     channels = model_cfg["channels"]
@@ -224,9 +243,15 @@ def create_deepsense(config, model_config_key):
 
     logging.info(f"Creating SingleModalDeepSense ({model_config_key})")
     logging.info(f"  modality={active_modality}, location={location_name}")
-    logging.info(f"  in_channels={in_channels}, in_spectrum_len={in_spectrum_len}, conv_layers={len(channels)}")
+    logging.info(
+        f"  in_channels={in_channels}, in_spectrum_len={in_spectrum_len}, conv_layers={len(channels)}"
+    )
     logging.info(f"  channels={channels}")
     logging.info(f"  kernel_sizes={kernel_sizes}, strides={strides}")
+
+    pretrain_mode = model_cfg["pretrain_mode"]
+    proj_hidden_dim = model_cfg["proj_hidden_dim"]
+    proj_out_dim = model_cfg["proj_out_dim"]
 
     model = SingleModalDeepSense(
         modality_name=active_modality,
@@ -241,6 +266,9 @@ def create_deepsense(config, model_config_key):
         recurrent_layers=model_cfg["recurrent_layers"],
         fc_dim=model_cfg["fc_dim"],
         dropout_ratio=model_cfg["dropout_ratio"],
+        pretrain_mode=pretrain_mode,
+        proj_hidden_dim=proj_hidden_dim,
+        proj_out_dim=proj_out_dim,
     )
 
     total_params = sum(p.numel() for p in model.parameters())
@@ -285,11 +313,15 @@ def create_deepsense_dw(config, model_config_key):
     if "in_channels" in model_cfg:
         in_channels = model_cfg["in_channels"]
     else:
-        in_channels = config["loc_mod_in_freq_channels"][location_name][active_modality]
+        in_channels = config["loc_mod_in_freq_channels"][location_name][
+            active_modality
+        ]
     if "in_spectrum_len" in model_cfg:
         in_spectrum_len = model_cfg["in_spectrum_len"]
     else:
-        in_spectrum_len = config["loc_mod_spectrum_len"][location_name][active_modality]
+        in_spectrum_len = config["loc_mod_spectrum_len"][location_name][
+            active_modality
+        ]
     num_classes = config["vehicle_classification"]["num_classes"]
 
     channels_freq = model_cfg["channels_freq"]
@@ -308,12 +340,43 @@ def create_deepsense_dw(config, model_config_key):
 
     logging.info(f"Creating SingleModalDeepSenseDW ({model_config_key})")
     logging.info(f"  modality={active_modality}, location={location_name}")
-    logging.info(f"  in_channels={in_channels}, in_spectrum_len={in_spectrum_len}, "
-                 f"freq_layers={len(channels_freq)}")
+    logging.info(
+        f"  in_channels={in_channels}, in_spectrum_len={in_spectrum_len}, "
+        f"freq_layers={len(channels_freq)}"
+    )
     logging.info(f"  channels_freq={channels_freq}")
-    logging.info(f"  kernel_sizes_freq={kernel_sizes_freq}, strides_freq={strides_freq}")
-    logging.info(f"  temporal_channels={temporal_channels}, "
-                 f"num_temporal_layers={num_temporal_layers}, temporal_kernel={temporal_kernel}")
+    logging.info(
+        f"  kernel_sizes_freq={kernel_sizes_freq}, strides_freq={strides_freq}"
+    )
+    logging.info(
+        f"  temporal_channels={temporal_channels}, "
+        f"num_temporal_layers={num_temporal_layers}, temporal_kernel={temporal_kernel}"
+    )
+
+    pretrain_mode = model_cfg["pretrain_mode"]
+    proj_hidden_dim = model_cfg["proj_hidden_dim"]
+    proj_out_dim = model_cfg["proj_out_dim"]
+
+    use_bigru = False
+    if "use_bigru" in model_cfg:
+        use_bigru = model_cfg["use_bigru"]
+    recurrent_dim = 256
+    if "recurrent_dim" in model_cfg:
+        recurrent_dim = model_cfg["recurrent_dim"]
+    recurrent_layers = 2
+    if "recurrent_layers" in model_cfg:
+        recurrent_layers = model_cfg["recurrent_layers"]
+    output_dims = None
+    if "output_dims" in model_cfg:
+        output_dims = model_cfg["output_dims"]
+
+    if use_bigru:
+        logging.info(
+            f"  use_bigru=True recurrent_dim={recurrent_dim} "
+            f"recurrent_layers={recurrent_layers}"
+        )
+    if output_dims is not None:
+        logging.info(f"  output_dims={output_dims}")
 
     model = SingleModalDeepSenseDW(
         modality_name=active_modality,
@@ -329,6 +392,13 @@ def create_deepsense_dw(config, model_config_key):
         temporal_kernel=temporal_kernel,
         fc_dim=model_cfg["fc_dim"],
         dropout_ratio=model_cfg["dropout_ratio"],
+        pretrain_mode=pretrain_mode,
+        proj_hidden_dim=proj_hidden_dim,
+        proj_out_dim=proj_out_dim,
+        use_bigru=use_bigru,
+        recurrent_dim=recurrent_dim,
+        recurrent_layers=recurrent_layers,
+        output_dims=output_dims,
     )
 
     total_params = sum(p.numel() for p in model.parameters())
@@ -336,50 +406,50 @@ def create_deepsense_dw(config, model_config_key):
     return model
 
 
-def get_parameter_memory(model, unit='MB'):
+def get_parameter_memory(model, unit="MB"):
     """
     Calculate memory used by model parameters (weights and biases).
-    
+
     Args:
         model: PyTorch model
         unit: 'B', 'KB', or 'MB'
-    
+
     Returns:
         float: Parameter memory in specified unit
     """
     total_params = sum(p.numel() for p in model.parameters())
     size_bytes = total_params * 4  # float32
-    
-    if unit == 'KB':
+
+    if unit == "KB":
         return size_bytes / 1024
-    elif unit == 'MB':
+    elif unit == "MB":
         return size_bytes / (1024 * 1024)
     return size_bytes
 
 
-def get_activation_memory(model, input_dict, unit='MB'):
+def get_activation_memory(model, input_dict, unit="MB"):
     """
     Estimate peak activation/feature map memory during forward pass (normalized to batch size 1).
-    
+
     Returns the size of the LARGEST single activation tensor (the peak),
     not the sum of all activations, since PyTorch frees tensors as they
     go out of scope. Memory is normalized to batch size 1.
-    
+
     Args:
         model: PyTorch model
         input_dict: Input dict format: {'location': {'modality': tensor}}
                    e.g., {'shake': {'audio': torch.randn(B, C, H, W)}}
         unit: 'B', 'KB', or 'MB'
-    
+
     Returns:
         float: Peak activation memory per sample in specified unit
     """
     import torch
-    
-    device = torch.device('cpu')
+
+    device = torch.device("cpu")
     model = model.to(device)
     model.eval()
-    
+
     # Get batch size from input
     batch_size = None
     for loc in input_dict:
@@ -388,16 +458,16 @@ def get_activation_memory(model, input_dict, unit='MB'):
             break
         if batch_size is not None:
             break
-    
+
     # Track the largest activation tensor
     peak_activation_bytes = 0
-    
+
     def hook_fn(module, input, output):
         nonlocal peak_activation_bytes
-        
+
         # Handle different output types
         tensors_to_check = []
-        
+
         if isinstance(output, torch.Tensor):
             tensors_to_check.append(output)
         elif isinstance(output, dict):
@@ -405,48 +475,52 @@ def get_activation_memory(model, input_dict, unit='MB'):
                 if isinstance(v, torch.Tensor):
                     tensors_to_check.append(v)
                 elif isinstance(v, list):
-                    tensors_to_check.extend([t for t in v if isinstance(t, torch.Tensor)])
+                    tensors_to_check.extend(
+                        [t for t in v if isinstance(t, torch.Tensor)]
+                    )
         elif isinstance(output, (list, tuple)):
-            tensors_to_check.extend([t for t in output if isinstance(t, torch.Tensor)])
-        
+            tensors_to_check.extend(
+                [t for t in output if isinstance(t, torch.Tensor)]
+            )
+
         # Find peak among current tensors
         for tensor in tensors_to_check:
             tensor_bytes = tensor.numel() * tensor.element_size()
             peak_activation_bytes = max(peak_activation_bytes, tensor_bytes)
-    
+
     # Register hooks on all modules
     hooks = []
     for module in model.modules():
         hooks.append(module.register_forward_hook(hook_fn))
-    
+
     # Run forward pass
     with torch.no_grad():
         _ = model(input_dict)
-    
+
     # Remove hooks
     for hook in hooks:
         hook.remove()
-    
+
     # Normalize to batch size 1
     if batch_size and batch_size > 0:
         peak_activation_bytes = peak_activation_bytes / batch_size
-    
-    if unit == 'KB':
+
+    if unit == "KB":
         return peak_activation_bytes / 1024
-    elif unit == 'MB':
+    elif unit == "MB":
         return peak_activation_bytes / (1024 * 1024)
     return peak_activation_bytes
 
 
-def get_total_memory(model, input_dict, unit='MB'):
+def get_total_memory(model, input_dict, unit="MB"):
     """
     Get total peak memory usage: parameters + peak activations.
-    
+
     Args:
         model: PyTorch model
         input_dict: Input dict format: {'location': {'modality': tensor}}
         unit: 'B', 'KB', or 'MB'
-    
+
     Returns:
         dict: {
             'parameter_memory': float,
@@ -458,24 +532,24 @@ def get_total_memory(model, input_dict, unit='MB'):
     param_mem = get_parameter_memory(model, unit=unit)
     act_mem = get_activation_memory(model, input_dict, unit=unit)
     total_mem = param_mem + act_mem
-    
+
     return {
-        'parameter_memory': param_mem,
-        'activation_memory': act_mem,
-        'total_memory': total_mem,
-        'unit': unit
+        "parameter_memory": param_mem,
+        "activation_memory": act_mem,
+        "total_memory": total_mem,
+        "unit": unit,
     }
 
 
-def get_input_memory(input_dict, unit='KB'):
+def get_input_memory(input_dict, unit="KB"):
     """
     Calculate memory requirements for input data (normalized to batch size 1).
-    
+
     Args:
         input_dict: Input dict format: {'location': {'modality': tensor}}
                    e.g., {'shake': {'audio': torch.randn(B, C, H, W)}}
         unit: 'B', 'KB', or 'MB' (default: 'KB')
-    
+
     Returns:
         dict: {
             'shape_info': list of dicts with location, modality, shape info,
@@ -485,43 +559,45 @@ def get_input_memory(input_dict, unit='KB'):
         }
     """
     import torch
-    
+
     def convert_bytes(size_bytes):
-        if unit == 'KB':
+        if unit == "KB":
             return size_bytes / 1024
-        elif unit == 'MB':
+        elif unit == "MB":
             return size_bytes / (1024 * 1024)
         return size_bytes
-    
+
     shape_info = []
     total_bytes = 0
     batch_size = None
-    
+
     for loc in input_dict:
         for mod in input_dict[loc]:
             tensor = input_dict[loc][mod]
-            
+
             # Get batch size from first dimension
             if batch_size is None:
                 batch_size = tensor.shape[0]
-            
+
             # Calculate total bytes and normalize to batch size 1
             tensor_bytes = tensor.numel() * tensor.element_size()
             tensor_bytes_per_sample = tensor_bytes / batch_size
             total_bytes += tensor_bytes_per_sample
-            
-            shape_info.append({
-                'location': loc,
-                'modality': mod,
-                'shape': list(tensor.shape),
-                'memory': convert_bytes(tensor_bytes_per_sample)
-            })
-    
+
+            shape_info.append(
+                {
+                    "location": loc,
+                    "modality": mod,
+                    "shape": list(tensor.shape),
+                    "memory": convert_bytes(tensor_bytes_per_sample),
+                }
+            )
+
     return {
-        'shape_info': shape_info,
-        'total_memory': convert_bytes(total_bytes),
-        'unit': unit,
-        'batch_size': batch_size
+        "shape_info": shape_info,
+        "total_memory": convert_bytes(total_bytes),
+        "unit": unit,
+        "batch_size": batch_size,
     }
 
 
@@ -540,25 +616,34 @@ def log_memory_info(memory_info, input_memory_info=None, logger=None):
     else:
         log_fn = logger.info
 
-    unit = memory_info['unit']
+    unit = memory_info["unit"]
 
     # Log input information first if provided
     if input_memory_info is not None:
         log_fn("=" * 80)
         log_fn("INPUT DATA INFORMATION (Per Sample, Batch Size 1)")
         log_fn("=" * 80)
-        if 'batch_size' in input_memory_info and input_memory_info['batch_size']:
+        if (
+            "batch_size" in input_memory_info
+            and input_memory_info["batch_size"]
+        ):
             log_fn(f"  Original batch size: {input_memory_info['batch_size']}")
-        for info in input_memory_info['shape_info']:
+        for info in input_memory_info["shape_info"]:
             # Show original shape with batch dimension
-            shape_str = "x".join(map(str, info['shape']))
+            shape_str = "x".join(map(str, info["shape"]))
             # Calculate per-sample shape (remove batch dimension for display)
-            per_sample_shape = info['shape'][1:] if len(info['shape']) > 1 else info['shape']
+            per_sample_shape = (
+                info["shape"][1:] if len(info["shape"]) > 1 else info["shape"]
+            )
             per_sample_shape_str = "x".join(map(str, per_sample_shape))
-            log_fn(f"  {info['location']}/{info['modality']}: "
-                   f"batch_shape={shape_str}, per_sample_shape={per_sample_shape_str}, "
-                   f"memory={info['memory']:.2f} {input_memory_info['unit']}")
-        log_fn(f"  Total Input Memory (per sample): {input_memory_info['total_memory']:.2f} {input_memory_info['unit']}")
+            log_fn(
+                f"  {info['location']}/{info['modality']}: "
+                f"batch_shape={shape_str}, per_sample_shape={per_sample_shape_str}, "
+                f"memory={info['memory']:.2f} {input_memory_info['unit']}"
+            )
+        log_fn(
+            f"  Total Input Memory (per sample): {input_memory_info['total_memory']:.2f} {input_memory_info['unit']}"
+        )
         log_fn("=" * 80)
         log_fn("")
 
@@ -566,7 +651,9 @@ def log_memory_info(memory_info, input_memory_info=None, logger=None):
     log_fn("MODEL MEMORY REQUIREMENTS (Per Sample, Batch Size 1)")
     log_fn("=" * 80)
     log_fn(f"  Parameters: {memory_info['parameter_memory']:.2f} {unit}")
-    log_fn(f"  Activations (per sample): {memory_info['activation_memory']:.2f} {unit}")
+    log_fn(
+        f"  Activations (per sample): {memory_info['activation_memory']:.2f} {unit}"
+    )
     log_fn(f"  Total (per sample): {memory_info['total_memory']:.2f} {unit}")
     log_fn("=" * 80)
 
@@ -574,13 +661,13 @@ def log_memory_info(memory_info, input_memory_info=None, logger=None):
 def get_model_config(config, model_config_key):
     """
     Extract and validate model configuration.
-    
+
     Useful for inspecting what model would be created before actually creating it.
-    
+
     Args:
         config: Full dataset config
         model_config_key: Key for model config section
-    
+
     Returns:
         dict: Validated model configuration with all defaults filled in
     """
@@ -588,7 +675,7 @@ def get_model_config(config, model_config_key):
     model_type = model_cfg["model_type"]
     active_modality = model_cfg["active_modality"]
     location_name = config["location_names"][0]
-    
+
     result = {
         "model_type": model_type,
         "active_modality": active_modality,
@@ -598,20 +685,23 @@ def get_model_config(config, model_config_key):
         "stem_kernel": model_cfg["stem_kernel"],
         "stem_stride": model_cfg["stem_stride"],
     }
-    
-    if model_type in ("student_resnet", "resnet"):
-        result.update({
-            "layers": model_cfg["layers"],
-            "filter_sizes": model_cfg["filter_sizes"],
-            "use_maxpool": model_cfg["use_maxpool"],
-        })
-    elif model_type in ("student_convonly", "convonly"):
-        result.update({
-            "num_blocks": model_cfg["num_blocks"],
-            "filter_sizes": model_cfg["filter_sizes"],
-            "kernel_sizes": model_cfg.get("kernel_sizes", None),
-            "strides": model_cfg.get("strides", None),
-        })
-    
-    return result
 
+    if model_type in ("student_resnet", "resnet"):
+        result.update(
+            {
+                "layers": model_cfg["layers"],
+                "filter_sizes": model_cfg["filter_sizes"],
+                "use_maxpool": model_cfg["use_maxpool"],
+            }
+        )
+    elif model_type in ("student_convonly", "convonly"):
+        result.update(
+            {
+                "num_blocks": model_cfg["num_blocks"],
+                "filter_sizes": model_cfg["filter_sizes"],
+                "kernel_sizes": model_cfg["kernel_sizes"],
+                "strides": model_cfg.get("strides", None),
+            }
+        )
+
+    return result

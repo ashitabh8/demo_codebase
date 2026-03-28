@@ -38,7 +38,8 @@ class TimeMaskAugmenter(nn.Module):
                     mod_input = org_loc_inputs[loc][mod].clone()
                     duration = randint(1, self.max_duration)
                     start_interval = torch.randint(0, mod_input.shape[2] - duration, (1,)).item()
-                    mod_input[:, :, :, start_interval : start_interval + duration] = 0
+                    # Made change over here fixing time augmentation
+                    mod_input[:, :, start_interval : start_interval + duration, :] = 0
                     aug_loc_inputs[loc][mod] = mod_input
                     aug_mod_labels.append(1)
                 else:

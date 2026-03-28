@@ -1,19 +1,16 @@
 """
-Training Script
+SSL Pretraining Script
 
-This script orchestrates the training process:
-1. Parse configuration and command-line arguments
-2. Create dataloaders
-3. Create model and augmenter
-4. Setup experiment directory and logging
-5. Initialize optimizer and scheduler
-6. Train the model with checkpointing and logging
+Standalone entry point for self-supervised contrastive pretraining with NT-Xent loss.
+Does NOT touch train.py. No normalization, no val/test splits, no class subsetting.
+
+Usage:
+    python pretrain.py --experiment_name pretrain_audio_resnet --yaml_path ../data/Parkland.yaml --gpu 0
 """
 
 import sys
 import logging
 import yaml
-import torch
 from pathlib import Path
 
 # Add src2 to path for imports
@@ -21,21 +18,18 @@ src2_path = Path(__file__).parent.parent
 sys.path.insert(0, str(src2_path))
 
 from dataset_utils.parse_args_utils import get_config
-from dataset_utils.MultiModalDataLoader import create_dataloaders
+from dataset_utils.MultiModalDataLoader import create_pretrain_dataloader
 from data_augmenter import create_augmenter, apply_augmentation
-from models.create_models import create_single_modal_model, get_total_memory
+from models.create_models import create_single_modal_model
 from train_test.loss import get_loss_function
 from train_test.train_test_utils import (
     setup_experiment_dir,
     setup_train_file_logging,
-    train,
-    train_vanilla_supervised_contrastive,
     setup_optimizer,
     setup_scheduler,
-    apply_class_subset,
-    validate_and_resolve_training_config,
+    validate_pretrain_config,
+    pretrain,
 )
-from train_test.normalize import setup_normalization
 
 # Configure logging
 logging.basicConfig(
@@ -44,48 +38,46 @@ logging.basicConfig(
 
 
 def main():
-    """Main training function."""
+    """Main SSL pretraining function."""
 
     # ========================================================================
     # 1. Load Configuration
     # ========================================================================
     logging.info("=" * 80)
-    logging.info("TRAINING SCRIPT")
+    logging.info("SSL PRETRAINING SCRIPT")
     logging.info("=" * 80)
 
     config = get_config()
     logging.info("Configuration loaded successfully")
 
-    (
-        experiment_name,
-        experiment_config,
-        model_name,
-        training_config_name,
-        training_config,
-        train_type,
-        stage_epochs,
-        loss_name,
-    ) = validate_and_resolve_training_config(config)
-    # breakpoint()
-
-    apply_class_subset(config)
+    # ========================================================================
+    # 2. Validate Pretrain Config
+    # ========================================================================
+    validate_pretrain_config(config)
+    logging.info("Pretrain config validated successfully")
 
     # ========================================================================
-    # 2. Create Dataloaders
+    # 3. Extract Experiment Config (inline, no validate_and_resolve_training_config)
     # ========================================================================
-    train_loader, val_loader, test_loader = create_dataloaders(config=config)
+    experiment_name = config["experiment_name"]
+    experiment_config = config["experiments"][experiment_name]
+    model_name = experiment_config["model"]
+    training_config_name = experiment_config["training"]
+    training_config = config["training_configs"][training_config_name]
+
+    logging.info(f"Experiment: {experiment_name}")
+    logging.info(f"Model: {model_name}")
+    logging.info(f"Training config: {training_config_name}")
 
     # ========================================================================
-    # 2b. Setup Normalization
+    # 4. Create Pretrain Dataloader (no val/test splits)
     # ========================================================================
-    logging.info("\nSetting up normalization...")
-    train_loader, val_loader, test_loader = setup_normalization(
-        train_loader, val_loader, test_loader, config
-    )
-    logging.info("Normalization setup complete")
+    logging.info("\nCreating pretrain dataloader...")
+    train_loader = create_pretrain_dataloader(config=config)
+    logging.info("Pretrain dataloader created successfully")
 
     # ========================================================================
-    # 3. Create Augmenter
+    # 5. Create Augmenter
     # ========================================================================
     logging.info("\nCreating augmenter...")
     augmenter = create_augmenter(
@@ -94,11 +86,12 @@ def main():
     logging.info("Augmenter created successfully")
 
     # ========================================================================
-    # 4. Setup Experiment Directory
+    # 6. Setup Experiment Directory (with "pretrain_" prefix)
     # ========================================================================
     logging.info("\nSetting up experiment directory...")
+    pretrain_experiment_name = f"pretrain_{experiment_name}"
     experiment_dir, tensorboard_dir = setup_experiment_dir(
-        config, experiment_name=experiment_name
+        config, experiment_name=pretrain_experiment_name
     )
     tb_run_dir = Path(tensorboard_dir).resolve()
     logging.info(
@@ -110,42 +103,24 @@ def main():
     )
 
     # ========================================================================
-    # 5. Setup File Logging
+    # 7. Setup File Logging
     # ========================================================================
     setup_train_file_logging(experiment_dir, argv=sys.argv)
 
     # ========================================================================
-    # 6. Training
+    # 8. Pretraining
     # ========================================================================
     logging.info("\n" + "=" * 80)
-    logging.info("STARTING TRAINING")
+    logging.info("STARTING SSL PRETRAINING")
     logging.info("=" * 80 + "\n")
 
     try:
         # ====================================================================
-        # Create Student Model
+        # Create Model
         # ====================================================================
-        # Factory pulls the model config from `config["models"][model_name]`
-        config["models"][model_name]["pretrain_mode"] = False
+        config["models"][model_name]["pretrain_mode"] = True
         model = create_single_modal_model(config, model_name)
-        logging.info(f"Student model created: {model_name}")
-
-        # Memory profile (B=1; divide parameter_memory by 4 for INT8 estimate)
-        _location = config["location_names"][0]
-        _model_cfg = config["models"][model_name]
-        _modality = _model_cfg["active_modality"]
-        _in_ch = _model_cfg.get("in_channels", config["loc_mod_in_freq_channels"][_location][_modality])
-        _n_segs = config.get("num_segments", 10)
-        _spec_len = _model_cfg.get("in_spectrum_len", config["loc_mod_spectrum_len"][_location][_modality])
-        _dummy = {_location: {_modality: torch.randn(1, _in_ch, _n_segs, _spec_len)}}
-        _mem = get_total_memory(model, _dummy, unit="MB")
-        logging.info("Memory profile (float32 / INT8 weight-only estimate):")
-        logging.info(
-            "  Parameters : %.2f MB  (INT8 ≈ %.2f MB)",
-            _mem["parameter_memory"], _mem["parameter_memory"] / 4,
-        )
-        logging.info("  Peak activation (B=1): %.3f MB", _mem["activation_memory"])
-        del _dummy, _mem
+        logging.info(f"Model created: {model_name}")
 
         # ====================================================================
         # Setup Loss Function
@@ -157,59 +132,26 @@ def main():
         # Setup Optimizer and Scheduler
         # ====================================================================
         logging.info("\nSetting up optimizer and scheduler...")
-        optimizer = setup_optimizer(
-            model, config, training_config=training_config
-        )
+        optimizer = setup_optimizer(model, config, training_config=training_config)
         scheduler = setup_scheduler(optimizer, config, training_config)
 
         # ====================================================================
-        # Train
+        # Pretrain
         # ====================================================================
-        if train_type == "vanilla_supervised":
-            logging.info("\nStarting vanilla supervised training...")
-            model, _, best_checkpoint_path = train(
-                model=model,
-                train_loader=train_loader,
-                val_loader=val_loader,
-                config=config,
-                experiment_dir=experiment_dir,
-                loss_fn=loss_fn,
-                val_fn=None,
-                augmenter=augmenter,
-                apply_augmentation_fn=apply_augmentation,
-                optimizer=optimizer,
-                scheduler=scheduler,
-                num_epochs=stage_epochs,
-                model_name=model_name,
-            )
-        elif train_type == "vanilla_supervised_contrastive":
-            logging.info(
-                "\nStarting vanilla supervised contrastive training..."
-            )
-            model, _, best_checkpoint_path = (
-                train_vanilla_supervised_contrastive(
-                    model=model,
-                    train_loader=train_loader,
-                    val_loader=val_loader,
-                    config=config,
-                    experiment_dir=experiment_dir,
-                    loss_fn=loss_fn,
-                    val_fn=None,
-                    augmenter=augmenter,
-                    apply_augmentation_fn=apply_augmentation,
-                    optimizer=optimizer,
-                    scheduler=scheduler,
-                    num_epochs=stage_epochs,
-                    model_name=model_name,
-                )
-            )
-        elif train_type == "distillation":
-            raise NotImplementedError(
-                "Distillation training loop not yet implemented. "
-                "Wire up kd_loss and a distillation train function first."
-            )
-        else:
-            raise ValueError(f"Unknown training type: {train_type}")
+        logging.info("\nStarting SSL pretraining...")
+        model, best_loss, best_checkpoint_path = pretrain(
+            model=model,
+            train_loader=train_loader,
+            config=config,
+            experiment_dir=experiment_dir,
+            loss_fn=loss_fn,
+            augmenter=augmenter,
+            apply_augmentation_fn=apply_augmentation,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            num_epochs=training_config["epochs"],
+            model_name=model_name,
+        )
 
         # ====================================================================
         # Update config with checkpoint path and save
@@ -221,13 +163,14 @@ def main():
             yaml.dump(config, f, default_flow_style=False)
 
         # ====================================================================
-        # Training Complete
+        # Pretraining Complete
         # ====================================================================
         logging.info("\n" + "=" * 80)
-        logging.info("TRAINING COMPLETED SUCCESSFULLY!")
+        logging.info("SSL PRETRAINING COMPLETED SUCCESSFULLY!")
         logging.info("=" * 80)
         logging.info(f"\nExperiment directory: {experiment_dir}")
         logging.info(f"Best checkpoint: {best_checkpoint_path}")
+        logging.info(f"Best loss: {best_loss:.6f}")
         logging.info(
             'TensorBoard (this run): tensorboard --logdir="%s" --port=6006',
             tb_run_dir,
@@ -239,14 +182,14 @@ def main():
 
     except KeyboardInterrupt:
         logging.info("\n" + "=" * 80)
-        logging.warning("Training interrupted by user")
+        logging.warning("Pretraining interrupted by user")
         logging.info("=" * 80)
         logging.info(f"Experiment directory: {experiment_dir}")
         sys.exit(0)
 
     except Exception as e:
         logging.error("\n" + "=" * 80)
-        logging.error("ERROR DURING TRAINING")
+        logging.error("ERROR DURING PRETRAINING")
         logging.error("=" * 80)
         logging.error(f"Error: {e}")
 

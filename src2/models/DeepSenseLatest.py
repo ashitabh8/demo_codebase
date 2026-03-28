@@ -118,6 +118,9 @@ class DeepSenseBackbone(nn.Module):
         recurrent_layers: int,
         fc_dim: int,
         dropout_ratio: float = 0.0,
+        pretrain_mode: bool = False,
+        proj_hidden_dim: int = 256,
+        proj_out_dim: int = 128,
     ):
         super().__init__()
 
@@ -157,6 +160,14 @@ class DeepSenseBackbone(nn.Module):
         # Classifier
         self.class_layer = nn.Linear(fc_dim, num_classes)
 
+        self.pretrain_mode = pretrain_mode
+        if self.pretrain_mode:
+            self.projection_head = nn.Sequential(
+                nn.Linear(fc_dim, proj_hidden_dim),
+                nn.ReLU(inplace=True),
+                nn.Linear(proj_hidden_dim, proj_out_dim),
+            )
+
     def forward(self, x: torch.Tensor) -> dict:
         """
         Args:
@@ -180,6 +191,10 @@ class DeepSenseBackbone(nn.Module):
 
         # Embed: → [B, fc_dim]
         features = self.sample_embd_layer(recurrent_out)
+
+        if self.pretrain_mode:
+            projection = self.projection_head(features)
+            return {"features": features, "projection": projection}
 
         # Classify: → [B, num_classes]
         logits = self.class_layer(features)
@@ -212,6 +227,9 @@ class SingleModalDeepSense(nn.Module):
         recurrent_layers: int,
         fc_dim: int,
         dropout_ratio: float = 0.0,
+        pretrain_mode: bool = False,
+        proj_hidden_dim: int = 256,
+        proj_out_dim: int = 128,
     ):
         super().__init__()
         self.modality_name = modality_name
@@ -228,6 +246,9 @@ class SingleModalDeepSense(nn.Module):
             recurrent_layers=recurrent_layers,
             fc_dim=fc_dim,
             dropout_ratio=dropout_ratio,
+            pretrain_mode=pretrain_mode,
+            proj_hidden_dim=proj_hidden_dim,
+            proj_out_dim=proj_out_dim,
         )
 
     def forward(self, freq_x: dict) -> dict:
