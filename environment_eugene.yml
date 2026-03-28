@@ -1,0 +1,85 @@
+# Portable conda environment for the ACIDS model distillation pipeline.
+#
+# Prerequisites on the target server:
+#   - NVIDIA driver >= 520 (e.g. driver 525 / CUDA 12.0 works)
+#   - Anaconda / Miniconda installed
+#
+# Setup:
+#   conda env create -f environment.yml
+#   conda activate cenv
+#
+# NOTE: PyTorch is installed via the official cu118 wheel index.
+# cu118 (CUDA 11.8) is the correct choice for NVIDIA driver 525 / CUDA 12.0.
+# CUDA wheel ↔ minimum driver version reference:
+#   cu118  ->  driver >= 520   (CUDA 12.0 driver 525 ✓ use this)
+#   cu121  ->  driver >= 530   (CUDA 12.0 driver 525 ✗ too old)
+#   cu124  ->  driver >= 550   (CUDA 12.0 driver 525 ✗ too old)
+# To update for a newer server change the URL and torch/torchvision lines below.
+
+name: cenv
+
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.13
+
+  # ── Core scientific computing ───────────────────────────────────────────────
+  - pandas=2.2.3
+  - scipy=1.15.2
+  - scikit-learn=1.6.1
+  - matplotlib=3.10
+  - seaborn=0.13.2
+
+  # ── Data / HuggingFace ecosystem ────────────────────────────────────────────
+  - datasets=3.3.2
+  - huggingface_hub=0.29.2
+  - transformers=4.49.0
+  - tokenizers=0.21.0
+
+  # ── Utilities ───────────────────────────────────────────────────────────────
+  - tqdm
+  - pyyaml
+  - filelock
+  - packaging
+
+  # ── Jupyter / interactive ───────────────────────────────────────────────────
+  - ipython
+  - ipykernel
+  - jupyter_client
+  - jupyter_core
+
+  - pip
+
+  - pip:
+    # ── PyTorch (CUDA 11.8 build — compatible with driver 525 / CUDA 12.0) ─────
+    # IMPORTANT: the extra index URL is what gives you the GPU wheel.
+    # Remove it and pip will silently install the CPU-only build.
+    - --extra-index-url https://download.pytorch.org/whl/cu118
+    - torch==2.6.0
+    - torchvision==0.21.0
+    - torchmetrics==1.6.2
+
+    # ── TensorFlow ────────────────────────────────────────────────────────────
+    - tensorflow==2.20.0
+    - keras==3.11.3
+    - tensorflow-model-optimization==0.8.0
+
+    # ── Numerical ─────────────────────────────────────────────────────────────
+    # Pinned to 1.x: NumPy 2.x introduced breaking API changes.
+    - numpy==1.26.4
+    - numba==0.61.2
+
+    # ── Extra ML / model utilities ────────────────────────────────────────────
+    - einops==0.8.1
+    - timm==1.0.15
+    - xgboost==3.0.0
+    - shap==0.47.2
+
+    # ── Visualisation ─────────────────────────────────────────────────────────
+    - plotly==6.5.2
+    - tensorboard==2.20.0
+
+    # ── Misc ──────────────────────────────────────────────────────────────────
+    - safetensors==0.5.3
