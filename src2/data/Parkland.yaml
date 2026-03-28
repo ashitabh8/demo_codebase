@@ -1,6 +1,8 @@
 # data paths  
 pretrain_index_file: /data/kara4/Parkland/time_data_partition/pretrain_index.txt
 
+# Index files directory for GQ: /data/misra8/GracesQuarters/index_files/2024-08-06-GQ-split-multiclass
+
 vehicle_classification:
         num_classes: 7  # number of classes
         class_names: ["Polaris", "Warhog", "Truck", "motor", "tesla", "mustang", "walk"]
