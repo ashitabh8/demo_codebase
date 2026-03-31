@@ -51,11 +51,13 @@ def select_finetune_train_fn(loss_name):
     """Route finetune runs to the correct training loop for the configured loss."""
     if loss_name == "cross_entropy":
         return train
+    if loss_name == "bce_multilabel":
+        return train
     if loss_name == "ce_supcon":
         return train_vanilla_supervised_contrastive
     raise ValueError(
         f"Unsupported finetune loss_name '{loss_name}'. "
-        "Expected 'cross_entropy' or 'ce_supcon'."
+        "Expected 'cross_entropy', 'bce_multilabel', or 'ce_supcon'."
     )
 
 
@@ -171,6 +173,7 @@ def main():
             scheduler=scheduler,
             num_epochs=num_epochs,
             model_name=model_name,
+            training_config=training_config,
         )
 
         config["models"][model_name]["checkpoint_path"] = best_checkpoint_path

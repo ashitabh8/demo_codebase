@@ -17,6 +17,23 @@ from models.ResNetSimple import (
 )
 from models.DeepSenseLatest import SingleModalDeepSense
 from models.DeepSenseDepthwise import SingleModalDeepSenseDW
+from models.DeepSenseDWSimple import (
+    DeepSenseDWSimpleBackbone,
+    SingleModalDeepSenseDWSimple,
+)
+
+
+def resolve_num_classes(config, model_cfg):
+    """
+    Classifier output width. SSL pretrain sets pretrain_mode True and does not
+    define task_name; use a dummy width (the supervised head is unused in forward).
+    Supervised runs set pretrain_mode False and require config['task_name'].
+    """
+    if model_cfg["pretrain_mode"]:
+        return 1
+    task_name = config["task_name"]
+    return config[task_name]["num_classes"]
+
 
 # =============================================================================
 # Student Model Factory for Distillation
@@ -69,6 +86,8 @@ def create_single_modal_model(config, model_name):
         return create_deepsense(config, model_name)
     if model_type == "deepsense_dw":
         return create_deepsense_dw(config, model_name)
+    if model_type == "deepsense_dw_simple":
+        return create_deepsense_dw_simple(config, model_name)
 
     # Get the single active modality and location
     active_modality = model_cfg["active_modality"]
@@ -84,9 +103,7 @@ def create_single_modal_model(config, model_name):
     all_channels = config["loc_mod_in_freq_channels"]
     in_channels = all_channels[location_name][active_modality]
 
-    # Classification parameters
-    task_cfg = config["vehicle_classification"]
-    num_classes = task_cfg["num_classes"]
+    num_classes = resolve_num_classes(config, model_cfg)
 
     # Common parameters
     fc_dim = model_cfg["fc_dim"]
@@ -172,7 +189,7 @@ def create_single_modal_model(config, model_name):
         raise ValueError(
             f"Unknown model type: '{model_type}'. "
             f"Choose from: 'student_resnet', 'resnet', 'student_convonly', 'convonly', "
-            f"'deepsense', 'deepsense_dw'"
+            f"'deepsense', 'deepsense_dw', 'deepsense_dw_simple'"
         )
 
     # Log model size
@@ -229,7 +246,7 @@ def create_deepsense(config, model_config_key):
     in_spectrum_len = config["loc_mod_spectrum_len"][location_name][
         active_modality
     ]
-    num_classes = config["vehicle_classification"]["num_classes"]
+    num_classes = resolve_num_classes(config, model_cfg)
 
     channels = model_cfg["channels"]
     kernel_sizes = model_cfg["kernel_sizes"]
@@ -322,7 +339,7 @@ def create_deepsense_dw(config, model_config_key):
         in_spectrum_len = config["loc_mod_spectrum_len"][location_name][
             active_modality
         ]
-    num_classes = config["vehicle_classification"]["num_classes"]
+    num_classes = resolve_num_classes(config, model_cfg)
 
     channels_freq = model_cfg["channels_freq"]
     kernel_sizes_freq = model_cfg["kernel_sizes_freq"]
@@ -399,6 +416,91 @@ def create_deepsense_dw(config, model_config_key):
         recurrent_dim=recurrent_dim,
         recurrent_layers=recurrent_layers,
         output_dims=output_dims,
+    )
+
+    total_params = sum(p.numel() for p in model.parameters())
+    logging.info(f"  Parameters: {total_params:,} ({total_params / 1e6:.4f}M)")
+    return model
+
+
+def create_deepsense_dw_simple(config, model_config_key):
+    """
+    Create a SingleModalDeepSenseDWSimple from YAML config.
+
+    Compiler-friendly variant: ReLU only, no Dropout, Conv2d-based temporal
+    layers (no Conv1d / BN1d), pure Tensor I/O, single execution path.
+    Supports the same per-model in_channels / in_spectrum_len overrides as
+    create_deepsense_dw.
+
+    Required keys under config["models"][model_config_key]:
+        model_type:          "deepsense_dw_simple"
+        active_modality:     str
+        channels_freq:       list[int]
+        kernel_sizes_freq:   list[[int, int]]
+        strides_freq:        list[[int, int]]
+        temporal_channels:   int
+        num_temporal_layers: int
+        temporal_kernel:     int
+        fc_dim:              int
+    """
+    model_cfg = config["models"][model_config_key]
+    active_modality = model_cfg["active_modality"]
+
+    location_names = config["location_names"]
+    if len(location_names) != 1:
+        raise ValueError(
+            f"SingleModalDeepSenseDWSimple expects exactly one location, got {location_names}"
+        )
+    location_name = location_names[0]
+
+    if "in_channels" in model_cfg:
+        in_channels = model_cfg["in_channels"]
+    else:
+        in_channels = config["loc_mod_in_freq_channels"][location_name][active_modality]
+
+    if "in_spectrum_len" in model_cfg:
+        in_spectrum_len = model_cfg["in_spectrum_len"]
+    else:
+        in_spectrum_len = config["loc_mod_spectrum_len"][location_name][active_modality]
+
+    num_classes = resolve_num_classes(config, model_cfg)
+
+    channels_freq = model_cfg["channels_freq"]
+    kernel_sizes_freq = model_cfg["kernel_sizes_freq"]
+    strides_freq = model_cfg["strides_freq"]
+
+    if not (len(channels_freq) == len(kernel_sizes_freq) == len(strides_freq)):
+        raise ValueError(
+            f"[{model_config_key}] channels_freq, kernel_sizes_freq, strides_freq must have "
+            f"equal length; got {len(channels_freq)}, {len(kernel_sizes_freq)}, {len(strides_freq)}"
+        )
+
+    logging.info(f"Creating SingleModalDeepSenseDWSimple ({model_config_key})")
+    logging.info(f"  modality={active_modality}, location={location_name}")
+    logging.info(
+        f"  in_channels={in_channels}, in_spectrum_len={in_spectrum_len}, "
+        f"freq_layers={len(channels_freq)}"
+    )
+    logging.info(f"  channels_freq={channels_freq}")
+    logging.info(f"  kernel_sizes_freq={kernel_sizes_freq}, strides_freq={strides_freq}")
+
+    backbone = DeepSenseDWSimpleBackbone(
+        in_channels=in_channels,
+        in_spectrum_len=in_spectrum_len,
+        num_classes=num_classes,
+        channels_freq=channels_freq,
+        kernel_sizes_freq=kernel_sizes_freq,
+        strides_freq=strides_freq,
+        temporal_channels=model_cfg["temporal_channels"],
+        num_temporal_layers=model_cfg["num_temporal_layers"],
+        temporal_kernel=model_cfg["temporal_kernel"],
+        fc_dim=model_cfg["fc_dim"],
+    )
+
+    model = SingleModalDeepSenseDWSimple(
+        location_name=location_name,
+        modality_name=active_modality,
+        backbone=backbone,
     )
 
     total_params = sum(p.numel() for p in model.parameters())

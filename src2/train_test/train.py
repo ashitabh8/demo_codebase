@@ -181,6 +181,7 @@ def main():
                 scheduler=scheduler,
                 num_epochs=stage_epochs,
                 model_name=model_name,
+                training_config=training_config,
             )
         elif train_type == "vanilla_supervised_contrastive":
             logging.info(

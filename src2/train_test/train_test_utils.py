@@ -22,6 +22,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from sklearn.metrics import confusion_matrix as sklearn_confusion_matrix
+from sklearn.metrics import average_precision_score, f1_score
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
@@ -339,6 +340,11 @@ def validate_and_resolve_training_config(config):
         )
 
     experiment_config = config["experiments"][experiment_name]
+    if "task_name" not in experiment_config:
+        raise ValueError(
+            f"Experiment '{experiment_name}' must define 'task_name'"
+        )
+    config["task_name"] = experiment_config["task_name"]
     model_name = experiment_config["model"]
     training_config_name = experiment_config["training"]
 
@@ -371,7 +377,7 @@ def validate_and_resolve_training_config(config):
 
 def apply_class_subset(config):
     """
-    If include_classes is set in config, restrict vehicle_classification to
+    If include_classes is set in config, restrict the active task to
     that subset and update config in-place with the remapped class info.
 
     Args:
@@ -382,7 +388,7 @@ def apply_class_subset(config):
         return
 
     include = sorted(set(include))
-    task_cfg = config['vehicle_classification']
+    task_cfg = config[config['task_name']]
 
     num_classes_orig = task_cfg['num_classes']
     invalid = [c for c in include if c < 0 or c >= num_classes_orig]
@@ -553,8 +559,8 @@ def log_header_to_claude(fh, model, config, num_epochs, optimizer, scheduler,
         "experiment_dir": str(experiment_dir),
         "train_type": train_type,
         "num_epochs": num_epochs,
-        "num_classes": config["vehicle_classification"]["num_classes"],
-        "class_names": config["vehicle_classification"]["class_names"],
+        "num_classes": config[config["task_name"]]["num_classes"],
+        "class_names": config[config["task_name"]]["class_names"],
         "model_summary": {
             "model_type": model_cfg.get("model_type", type(model).__name__),
             "total_params": sum(p.numel() for p in model.parameters()),
@@ -995,6 +1001,234 @@ def validate(model, val_loader, loss_fn, device, augmenter=None, apply_augmentat
     }
 
 
+def validate_multilabel(
+    model,
+    val_loader,
+    loss_fn,
+    device,
+    training_config,
+    augmenter=None,
+    apply_augmentation_fn=None,
+):
+    """
+    Threshold-free validation for multi-label BCE targets [B, C] float in {0, 1}.
+
+    Metrics:
+        - val loss (BCE)
+        - mAP (mean Average Precision across classes)
+
+    No thresholded metrics are computed here; optimal per-class thresholds
+    are determined post-training via find_optimal_per_class_thresholds().
+
+    Returns dict with:
+        loss, mAP, accuracy (0.0 placeholder), confusion_matrix (None),
+        raw_probs [N,C], raw_labels [N,C]
+    """
+    model.eval()
+    val_loss = 0.0
+    val_total = 0
+    all_prob_rows = []
+    all_label_rows = []
+
+    with torch.no_grad():
+        for batch_data in tqdm(val_loader, desc="Validation", leave=False):
+            if len(batch_data) == 3:
+                data, labels, idx = batch_data
+            else:
+                data, labels = batch_data[0], batch_data[1]
+
+            if augmenter is not None and apply_augmentation_fn is not None:
+                data, labels = apply_augmentation_fn(augmenter, data, labels)
+
+            labels = labels.to(device)
+            if isinstance(data, dict):
+                for loc in data:
+                    for mod in data[loc]:
+                        data[loc][mod] = data[loc][mod].to(device)
+            else:
+                data = data.to(device)
+
+            outputs = model(data)
+            if isinstance(outputs, dict):
+                logits = outputs["logits"]
+            else:
+                logits = outputs
+
+            loss = loss_fn(outputs, labels)
+            val_loss += loss.item() * labels.size(0)
+            val_total += labels.size(0)
+
+            probs = torch.sigmoid(logits)
+            y_true = labels.float()
+
+            all_prob_rows.append(probs.cpu().numpy())
+            all_label_rows.append(y_true.cpu().numpy())
+
+    epoch_val_loss = val_loss / val_total
+
+    if len(all_prob_rows) == 0:
+        return {
+            "loss": epoch_val_loss,
+            "mAP": 0.0,
+            "accuracy": 0.0,
+            "confusion_matrix": None,
+            "raw_probs": np.empty((0, 0)),
+            "raw_labels": np.empty((0, 0)),
+        }
+
+    y_prob = np.concatenate(all_prob_rows, axis=0)
+    y_true = np.concatenate(all_label_rows, axis=0)
+
+    per_class_ap = []
+    for c in range(y_true.shape[1]):
+        if y_true[:, c].sum() == 0:
+            per_class_ap.append(0.0)
+        else:
+            per_class_ap.append(
+                float(average_precision_score(y_true[:, c], y_prob[:, c]))
+            )
+    mAP = float(np.mean(per_class_ap))
+
+    return {
+        "loss": epoch_val_loss,
+        "mAP": mAP,
+        "accuracy": 0.0,
+        "confusion_matrix": None,
+        "raw_probs": y_prob,
+        "raw_labels": y_true,
+    }
+
+
+def find_optimal_per_class_thresholds(
+    y_true,
+    y_prob,
+    class_names,
+    thresholds=None,
+    metric="f1",
+):
+    """
+    Sweep thresholds per class on raw sigmoid probabilities to find each
+    class's F1-maximizing (or precision/recall-maximizing) cutoff.
+
+    Args:
+        y_true:  np.ndarray [N, C] binary ground-truth
+        y_prob:  np.ndarray [N, C] sigmoid probabilities
+        class_names: list[str] length C
+        thresholds: 1-D array of candidate thresholds to evaluate.
+            Defaults to np.arange(0.05, 0.96, 0.05).
+        metric: "f1" (default) — maximize per-class F1.
+
+    Returns:
+        dict with:
+            "per_class": list of dicts, one per class:
+                {"class": str, "best_threshold": float, "best_f1": float,
+                 "curve": list of {"threshold": float, "precision": float,
+                                   "recall": float, "f1": float}}
+            "global_macro_f1_at_best": float  (macro-F1 when each class uses its own best threshold)
+            "global_subset_acc_at_best": float
+    """
+    if thresholds is None:
+        thresholds = np.arange(0.05, 0.96, 0.05)
+    thresholds = np.asarray(thresholds, dtype=np.float64)
+
+    n_samples, n_classes = y_prob.shape
+    per_class_results = []
+
+    best_thresholds = np.zeros(n_classes, dtype=np.float64)
+
+    for c in range(n_classes):
+        col_true = y_true[:, c]
+        col_prob = y_prob[:, c]
+        curve = []
+        best_f1 = -1.0
+        best_t = 0.5
+
+        for t in thresholds:
+            col_pred = (col_prob >= t).astype(np.float64)
+            tp = float(np.sum((col_pred == 1) & (col_true == 1)))
+            fp = float(np.sum((col_pred == 1) & (col_true == 0)))
+            fn = float(np.sum((col_pred == 0) & (col_true == 1)))
+
+            precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+            recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            f1 = (
+                2 * precision * recall / (precision + recall)
+                if (precision + recall) > 0
+                else 0.0
+            )
+            curve.append({
+                "threshold": round(float(t), 4),
+                "precision": round(precision, 4),
+                "recall": round(recall, 4),
+                "f1": round(f1, 4),
+            })
+            if f1 > best_f1:
+                best_f1 = f1
+                best_t = float(t)
+
+        best_thresholds[c] = best_t
+        per_class_results.append({
+            "class": class_names[c],
+            "best_threshold": round(best_t, 4),
+            "best_f1": round(best_f1, 4),
+            "curve": curve,
+        })
+
+    y_pred_optimal = (y_prob >= best_thresholds[np.newaxis, :]).astype(np.float64)
+    global_macro_f1 = float(
+        f1_score(y_true, y_pred_optimal, average="macro", zero_division=0)
+    )
+    global_subset_acc = float(
+        (y_pred_optimal == y_true).all(axis=1).mean()
+    )
+
+    return {
+        "per_class": per_class_results,
+        "best_thresholds": {
+            class_names[c]: round(best_thresholds[c], 4) for c in range(n_classes)
+        },
+        "global_macro_f1_at_best": round(global_macro_f1, 4),
+        "global_subset_acc_at_best": round(global_subset_acc, 4),
+    }
+
+
+def log_threshold_analysis(logger, writer, threshold_results, experiment_dir):
+    """Log per-class threshold sweep results and save to disk."""
+    logger.info("=" * 80)
+    logger.info("OPTIMAL PER-CLASS THRESHOLD ANALYSIS (validation set)")
+    logger.info("=" * 80)
+
+    for cls_result in threshold_results["per_class"]:
+        logger.info(
+            f"  {cls_result['class']:20s}  best_threshold={cls_result['best_threshold']:.4f}  "
+            f"best_f1={cls_result['best_f1']:.4f}"
+        )
+
+    logger.info(
+        f"  Global macro-F1 at per-class optimal: "
+        f"{threshold_results['global_macro_f1_at_best']:.4f}"
+    )
+    logger.info(
+        f"  Global subset accuracy at per-class optimal: "
+        f"{threshold_results['global_subset_acc_at_best']:.4f}"
+    )
+    logger.info(f"  Per-class thresholds: {threshold_results['best_thresholds']}")
+    logger.info("=" * 80)
+
+    for cls_result in threshold_results["per_class"]:
+        cls_name = cls_result["class"]
+        for pt in cls_result["curve"]:
+            t = pt["threshold"]
+            writer.add_scalar(f"ThresholdCurve/{cls_name}/precision", pt["precision"], int(t * 1000))
+            writer.add_scalar(f"ThresholdCurve/{cls_name}/recall", pt["recall"], int(t * 1000))
+            writer.add_scalar(f"ThresholdCurve/{cls_name}/f1", pt["f1"], int(t * 1000))
+
+    out_path = Path(experiment_dir) / "logs" / "optimal_thresholds.json"
+    with open(out_path, "w") as f:
+        json.dump(threshold_results, f, indent=2)
+    logger.info(f"Threshold analysis saved to: {out_path}")
+
+
 def log_supcon_embedding_scatter(
     writer,
     *,
@@ -1276,7 +1510,7 @@ def validate_vanilla_supervised_contrastive(
 def train(model, train_loader, val_loader, config, experiment_dir,
           loss_fn, optimizer, scheduler, num_epochs,
           val_fn=None, augmenter=None, apply_augmentation_fn=None,
-          model_name=None):
+          model_name=None, training_config=None):
     """
     Train the model with comprehensive logging and checkpointing.
     
@@ -1293,6 +1527,8 @@ def train(model, train_loader, val_loader, config, experiment_dir,
         val_fn: Custom validation function (optional)
         augmenter: Data augmenter object (optional)
         apply_augmentation_fn: Function to apply augmentation (optional)
+        training_config: Experiment training_configs entry; required fields for
+            bce_multilabel (loss_name, multilabel_best_metric)
     
     Returns:
         model: Trained model
@@ -1306,30 +1542,35 @@ def train(model, train_loader, val_loader, config, experiment_dir,
     if loss_fn is None:
         raise ValueError("loss_fn is required - must be passed explicitly")
 
+    multilabel = (
+        training_config is not None
+        and training_config["loss_name"] == "bce_multilabel"
+    )
+    if multilabel and val_fn is not None:
+        raise ValueError(
+            "bce_multilabel training does not support a custom val_fn; use val_fn=None"
+        )
+
     # ---------------------------------------------------------------------
     # Peak RAM tracking (CPU RSS + optional CUDA peak)
     # ---------------------------------------------------------------------
     rss_kb_start = _get_process_peak_rss_kb()
     peak_rss_kb = rss_kb_start
-    if device.type == "cuda":
-        # Track CUDA peaks during the run (separate from system RAM).
-        torch.cuda.reset_peak_memory_stats(device=device)
-    
+    # if device.type == "cuda":
+    #     # Track CUDA peaks during the run (separate from system RAM).
+    #     torch.cuda.reset_peak_memory_stats(device=device)
+
     # Setup directories
     experiment_path = Path(experiment_dir)
     logs_dir = experiment_path / "logs"
     models_dir = experiment_path / "models"
     tensorboard_dir = experiment_path / "tensorboard"
     
-    # Setup logging
-    log_file = logs_dir / "train.log"
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    # Logger — NO extra file handler to avoid double-write bug.
+    # The root logger already has a file handler from setup_train_file_logging().
+    # This named logger propagates to root, giving a single copy per log line.
     logger = logging.getLogger('train')
-    logger.addHandler(file_handler)
-    logger.setLevel(logging.INFO)
-    
+
     # Setup TensorBoard
     writer = SummaryWriter(str(tensorboard_dir))
 
@@ -1343,9 +1584,21 @@ def train(model, train_loader, val_loader, config, experiment_dir,
         train_type="vanilla_supervised",
     )
 
-    # Training parameters (all passed explicitly, no fallbacks)
-    num_classes = config['vehicle_classification']['num_classes']
-    class_names = config['vehicle_classification']['class_names']
+    # Training parameters: resolve task block via task_name (same as create_models).
+    _task_name = config["task_name"]
+    task_cfg = config[_task_name]
+    num_classes = task_cfg["num_classes"]
+    class_names = task_cfg["class_names"]
+
+    ml_best_metric = None
+    if multilabel:
+        ml_best_metric = training_config["multilabel_best_metric"]
+        allowed_ml_metrics = ("val_loss", "mAP")
+        if ml_best_metric not in allowed_ml_metrics:
+            raise ValueError(
+                f"multilabel_best_metric must be one of {allowed_ml_metrics}, "
+                f"got '{ml_best_metric}'"
+            )
 
     # Training history
     train_history = {
@@ -1359,14 +1612,19 @@ def train(model, train_loader, val_loader, config, experiment_dir,
     # Best model tracking
     best_val_acc = 0.0
     best_val_f1 = None
+    best_val_mAP = None
     best_epoch = 0
     best_val_cm = None
+    best_selection_score = None
 
     logger.info("=" * 80)
     logger.info("Starting Training")
     logger.info(f"Device: {device}")
     logger.info(f"Number of epochs: {num_epochs}")
     logger.info(f"Number of classes: {num_classes}")
+    logger.info(f"Task (metrics): {_task_name}")
+    if multilabel:
+        logger.info(f"Multilabel BCE: best_metric={ml_best_metric}")
     logger.info(f"Experiment directory: {experiment_dir}")
     logger.info("=" * 80)
     
@@ -1413,14 +1671,15 @@ def train(model, train_loader, val_loader, config, experiment_dir,
             optimizer.zero_grad()
             outputs = model(data)
             
-            # Handle one-hot labels if needed
-            if len(labels.shape) == 2 and labels.shape[1] > 1:
+            if multilabel:
+                loss_labels = labels.float()
+            elif len(labels.shape) == 2 and labels.shape[1] > 1:
                 loss_labels = torch.argmax(labels, dim=1)
             else:
                 loss_labels = labels
             
             loss = loss_fn(outputs, loss_labels)
-            
+
             # Backward pass
             loss.backward()
             
@@ -1433,29 +1692,27 @@ def train(model, train_loader, val_loader, config, experiment_dir,
             
             # Update peak RSS (ru_maxrss is already a peak, but we keep an
             # explicit max for clear end-of-run logging).
-            rss_kb_now = _get_process_peak_rss_kb()
-            if rss_kb_now > peak_rss_kb:
-                peak_rss_kb = rss_kb_now
+            # rss_kb_now = _get_process_peak_rss_kb()
+            # if rss_kb_now > peak_rss_kb:
+            #     peak_rss_kb = rss_kb_now
             
             # Metrics
             train_loss += loss.item() * labels.size(0)
             
-            # Extract logits for metrics (handle dict outputs)
             if isinstance(outputs, dict):
                 logits = outputs['logits']
             else:
                 logits = outputs
-            predictions = torch.argmax(logits, dim=1)
-            if len(labels.shape) == 2 and labels.shape[1] > 1:
-                labels_idx = torch.argmax(labels, dim=1)
-            else:
-                labels_idx = labels
-            
-            train_correct += (predictions == labels_idx).sum().item()
+            if not multilabel:
+                predictions = torch.argmax(logits, dim=1)
+                if len(labels.shape) == 2 and labels.shape[1] > 1:
+                    labels_idx = torch.argmax(labels, dim=1)
+                else:
+                    labels_idx = labels
+                train_correct += (predictions == labels_idx).sum().item()
+                all_train_preds.extend(predictions.cpu().numpy())
+                all_train_labels.extend(labels_idx.cpu().numpy())
             train_total += labels.size(0)
-            
-            all_train_preds.extend(predictions.cpu().numpy())
-            all_train_labels.extend(labels_idx.cpu().numpy())
         
         # Calculate epoch training metrics
         epoch_train_loss = train_loss / train_total
@@ -1468,16 +1725,28 @@ def train(model, train_loader, val_loader, config, experiment_dir,
         # Validation Phase
         # ====================================================================
         if val_fn is not None:
-            # Use custom validation function
             val_results = val_fn(model, val_loader, loss_fn, device, config)
+        elif multilabel:
+            val_results = validate_multilabel(
+                model,
+                val_loader,
+                loss_fn,
+                device,
+                training_config,
+                augmenter,
+                apply_augmentation_fn,
+            )
         else:
-            # Use default validation function
             val_results = validate(model, val_loader, loss_fn, device, augmenter, apply_augmentation_fn)
         
         epoch_val_loss = val_results['loss']
         epoch_val_acc = val_results['accuracy']
-        all_val_preds = val_results['predictions']
-        all_val_labels = val_results['labels']
+        if multilabel:
+            all_val_preds = val_results['raw_probs']
+            all_val_labels = val_results['raw_labels']
+        else:
+            all_val_preds = val_results['predictions']
+            all_val_labels = val_results['labels']
         
         train_history['val_loss'].append(epoch_val_loss)
         train_history['val_acc'].append(epoch_val_acc)
@@ -1491,7 +1760,17 @@ def train(model, train_loader, val_loader, config, experiment_dir,
             scheduler.step()
 
         # Claude epoch log (before checkpoint block so is_best reflects pre-update state)
-        _is_best_epoch = epoch_val_acc > best_val_acc
+        if multilabel:
+            if ml_best_metric == "val_loss":
+                curr_sel = val_results["loss"]
+                _is_best_epoch = best_selection_score is None or curr_sel < best_selection_score
+            elif ml_best_metric == "mAP":
+                curr_sel = val_results["mAP"]
+                _is_best_epoch = best_selection_score is None or curr_sel > best_selection_score
+            else:
+                raise ValueError(f"Unknown multilabel_best_metric: {ml_best_metric}")
+        else:
+            _is_best_epoch = epoch_val_acc > best_val_acc
         log_epoch_to_claude(
             _claude_fh,
             epoch=epoch,
@@ -1511,6 +1790,8 @@ def train(model, train_loader, val_loader, config, experiment_dir,
         logger.info(f"Epoch [{epoch+1}/{num_epochs}]")
         logger.info(f"  Train Loss: {epoch_train_loss:.4f}, Train Acc: {epoch_train_acc:.4f}")
         logger.info(f"  Val Loss: {epoch_val_loss:.4f}, Val Acc: {epoch_val_acc:.4f}")
+        if multilabel:
+            logger.info(f"  Val mAP: {val_results['mAP']:.4f}")
         logger.info(f"  Learning Rate: {current_lr:.6f}")
         
         # TensorBoard logging
@@ -1519,16 +1800,16 @@ def train(model, train_loader, val_loader, config, experiment_dir,
         writer.add_scalar('Accuracy/train', epoch_train_acc, epoch)
         writer.add_scalar('Accuracy/val', epoch_val_acc, epoch)
         writer.add_scalar('Learning_Rate', current_lr, epoch)
+        if multilabel:
+            writer.add_scalar('Metrics/val_mAP', val_results['mAP'], epoch)
         
         # Confusion matrix logging (every 5 epochs or last epoch)
-        if (epoch + 1) % 5 == 0 or epoch == num_epochs - 1:
-            # Training confusion matrix
+        if not multilabel and ((epoch + 1) % 5 == 0 or epoch == num_epochs - 1):
             train_cm = calculate_confusion_matrix(all_train_preds, all_train_labels, num_classes)
             train_cm_fig = plot_confusion_matrix(train_cm, class_names=class_names, normalize=True)
             writer.add_figure('Confusion_Matrix/train', train_cm_fig, epoch)
             plt.close(train_cm_fig)
             
-            # Validation confusion matrix
             val_cm = calculate_confusion_matrix(all_val_preds, all_val_labels, num_classes)
             val_cm_fig = plot_confusion_matrix(val_cm, class_names=class_names, normalize=True)
             writer.add_figure('Confusion_Matrix/val', val_cm_fig, epoch)
@@ -1539,8 +1820,26 @@ def train(model, train_loader, val_loader, config, experiment_dir,
         # ====================================================================
         # Save Checkpoints
         # ====================================================================
-        # Save best model
-        if epoch_val_acc > best_val_acc:
+        if multilabel:
+            if _is_best_epoch:
+                best_selection_score = curr_sel
+                best_val_mAP = val_results["mAP"]
+                best_epoch = epoch
+                best_val_cm = None
+                best_model_path = models_dir / "best_model.pth"
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'val_loss': epoch_val_loss,
+                    'val_mAP': val_results['mAP'],
+                    'config': config
+                }, best_model_path)
+                logger.info(
+                    f"  Best model saved! (metric={ml_best_metric}={curr_sel:.4f}, "
+                    f"mAP={best_val_mAP:.4f}, loss={epoch_val_loss:.4f})"
+                )
+        elif epoch_val_acc > best_val_acc:
             best_val_acc = epoch_val_acc
             best_val_f1 = val_results.get('f1_macro')
             best_epoch = epoch
@@ -1570,7 +1869,16 @@ def train(model, train_loader, val_loader, config, experiment_dir,
     # Final summary
     logger.info("=" * 80)
     logger.info("Training Complete!")
-    logger.info(f"Best validation accuracy: {best_val_acc:.4f} at epoch {best_epoch + 1}")
+    if multilabel:
+        logger.info(
+            f"Best checkpoint at epoch {best_epoch + 1} "
+            f"(selected by {ml_best_metric}={best_selection_score:.4f}, "
+            f"mAP={best_val_mAP:.4f})"
+        )
+    else:
+        logger.info(
+            f"Best validation accuracy: {best_val_acc:.4f} at epoch {best_epoch + 1}"
+        )
     logger.info(f"Models saved to: {models_dir}")
     logger.info(f"TensorBoard logs: {tensorboard_dir}")
     logger.info("=" * 80)
@@ -1583,23 +1891,45 @@ def train(model, train_loader, val_loader, config, experiment_dir,
             title=f"Best Validation Confusion Matrix  (epoch {best_epoch + 1}  |  val_acc={best_val_acc:.4f})",
         )
 
+    # -----------------------------------------------------------------
+    # Per-class threshold optimization (multilabel only)
+    # -----------------------------------------------------------------
+    if multilabel:
+        logger.info("\nRunning per-class threshold optimization on best model...")
+        best_ckpt = torch.load(
+            str(models_dir / "best_model.pth"),
+            map_location=device,
+            weights_only=False,
+        )
+        model.load_state_dict(best_ckpt["model_state_dict"])
+        final_val = validate_multilabel(
+            model, val_loader, loss_fn, device, training_config,
+            augmenter, apply_augmentation_fn,
+        )
+        threshold_results = find_optimal_per_class_thresholds(
+            final_val["raw_labels"],
+            final_val["raw_probs"],
+            class_names,
+        )
+        log_threshold_analysis(logger, writer, threshold_results, experiment_dir)
+
     writer.close()
 
     # ---------------------------------------------------------------------
     # Final peak RAM logging
     # ---------------------------------------------------------------------
-    rss_kb_end = _get_process_peak_rss_kb()
-    peak_rss_mb = peak_rss_kb / 1024.0
-    rss_delta_mb = (rss_kb_end - rss_kb_start) / 1024.0
-    logger.info(
-        f"Peak CPU RSS (ru_maxrss): {peak_rss_mb:.2f} MB (delta since start: {rss_delta_mb:.2f} MB)"
-    )
-    if device.type == "cuda":
-        cuda_peak_alloc_mb = torch.cuda.max_memory_allocated(device=device) / (1024 * 1024)
-        cuda_peak_reserved_mb = torch.cuda.max_memory_reserved(device=device) / (1024 * 1024)
-        logger.info(
-            f"Peak CUDA memory: allocated={cuda_peak_alloc_mb:.2f} MB, reserved={cuda_peak_reserved_mb:.2f} MB"
-        )
+    # rss_kb_end = _get_process_peak_rss_kb()
+    # peak_rss_mb = peak_rss_kb / 1024.0
+    # rss_delta_mb = (rss_kb_end - rss_kb_start) / 1024.0
+    # logger.info(
+    #     f"Peak CPU RSS (ru_maxrss): {peak_rss_mb:.2f} MB (delta since start: {rss_delta_mb:.2f} MB)"
+    # )
+    # if device.type == "cuda":
+    #     cuda_peak_alloc_mb = torch.cuda.max_memory_allocated(device=device) / (1024 * 1024)
+    #     cuda_peak_reserved_mb = torch.cuda.max_memory_reserved(device=device) / (1024 * 1024)
+    #     logger.info(
+    #         f"Peak CUDA memory: allocated={cuda_peak_alloc_mb:.2f} MB, reserved={cuda_peak_reserved_mb:.2f} MB"
+    #     )
 
     # Return model, history, and best checkpoint path
     best_checkpoint_path = str(models_dir / "best_model.pth")
@@ -1635,9 +1965,12 @@ def train_vanilla_supervised_contrastive(
     augmenter=None,
     apply_augmentation_fn=None,
     model_name=None,
+    training_config=None,
 ):
     """
     Two-view supervised contrastive training.
+
+    training_config is accepted for API parity with train() / finetune.py; unused here.
 
     For each batch:
       - create two independent augmented views (view1, view2)
@@ -1664,14 +1997,10 @@ def train_vanilla_supervised_contrastive(
     models_dir = experiment_path / "models"
     tensorboard_dir = experiment_path / "tensorboard"
 
-    # Setup logging
-    log_file = logs_dir / "train.log"
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    # Logger — NO extra file handler to avoid double-write bug.
+    # The root logger already has a file handler from setup_train_file_logging().
+    # This named logger propagates to root, giving a single copy per log line.
     logger = logging.getLogger("train_supcon")
-    logger.addHandler(file_handler)
-    logger.setLevel(logging.INFO)
 
     # Setup TensorBoard
     writer = SummaryWriter(str(tensorboard_dir))
@@ -1686,8 +2015,8 @@ def train_vanilla_supervised_contrastive(
         train_type="vanilla_supervised_contrastive",
     )
 
-    num_classes = config["vehicle_classification"]["num_classes"]
-    class_names = config["vehicle_classification"]["class_names"]
+    num_classes = config[config["task_name"]]["num_classes"]
+    class_names = config[config["task_name"]]["class_names"]
 
     train_history = {
         "train_loss": [],
@@ -2012,8 +2341,8 @@ def test(model, test_loader, config, experiment_dir, checkpoint_path=None,
     
     log_file = logs_dir / "test_results.txt"
     
-    num_classes = config.get('vehicle_classification', {}).get('num_classes', 7)
-    class_names = config.get('vehicle_classification', {}).get('class_names', None)
+    num_classes = config[config["task_name"]]["num_classes"]
+    class_names = config[config["task_name"]]["class_names"]
     
     # Use custom test function if provided
     if test_fn is not None:
@@ -2253,6 +2582,11 @@ def validate_finetune_config(config):
         )
 
     experiment_config = experiments[experiment_name]
+    if "task_name" not in experiment_config:
+        raise ValueError(
+            f"Experiment '{experiment_name}' must define 'task_name'"
+        )
+    config["task_name"] = experiment_config["task_name"]
     model_name = experiment_config["model"]
     training_config_name = experiment_config["training"]
 
@@ -2271,10 +2605,23 @@ def validate_finetune_config(config):
         )
 
     loss_name = training_config["loss_name"]
-    if loss_name != "cross_entropy" and loss_name != "ce_supcon":
+    allowed = ("cross_entropy", "ce_supcon", "bce_multilabel")
+    if loss_name not in allowed:
         raise ValueError(
-            f"Finetune expects loss_name 'cross_entropy' or 'ce_supcon', got '{loss_name}'"
+            f"Finetune expects loss_name one of {allowed}, got '{loss_name}'"
         )
+
+    if loss_name == "bce_multilabel":
+        if "multilabel_best_metric" not in training_config:
+            raise ValueError(
+                "bce_multilabel finetune requires multilabel_best_metric in training_config "
+                "('val_loss' or 'mAP')"
+            )
+        mbm = training_config["multilabel_best_metric"]
+        if mbm not in ("val_loss", "mAP"):
+            raise ValueError(
+                f"multilabel_best_metric must be 'val_loss' or 'mAP', got '{mbm}'"
+            )
 
     if "freeze_backbone" not in training_config:
         raise ValueError(

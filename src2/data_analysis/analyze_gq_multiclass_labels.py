@@ -73,32 +73,25 @@ def min_distance_meters(sample: dict) -> float | None:
 DISTANCE_NEAR_M = 10.0
 
 
-def print_sample_structure(sample: dict, indent: int = 0) -> None:
-    """Print nested keys, types, and tensor/array shapes for one loaded sample."""
+
+def print_sample_dict(sample: dict, indent: int = 0) -> None:
+    """
+    Print the full sample dict with tensor/array shapes instead of values.
+    Scalars and small non-array values are printed as-is.
+    """
     prefix = "  " * indent
-
-    def line(msg: str) -> None:
-        print(f"{prefix}{msg}")
-
-    if isinstance(sample, dict):
-        for k in sorted(sample.keys()):
-            v = sample[k]
-            if isinstance(v, dict):
-                line(f"{k}: dict, keys = {sorted(v.keys())!s}")
-                print_sample_structure(v, indent + 1)
-            elif hasattr(v, "shape"):
-                line(
-                    f"{k}: array/tensor shape={tuple(v.shape)}, dtype={v.dtype}"
-                )
-                if k == "label":
-                    vals = [str(v.flat[i]) for i in range(int(v.size))]
-                    line(f"  label strings: {vals}")
-            else:
-                line(f"{k}: {type(v).__name__} = {v!r}")
-    elif hasattr(sample, "shape"):
-        line(f"shape={tuple(sample.shape)}, dtype={sample.dtype}")
-    else:
-        line(f"{type(sample).__name__} = {sample!r}")
+    for k in sorted(sample.keys()):
+        v = sample[k]
+        if isinstance(v, dict):
+            print(f"{prefix}{k}:")
+            print_sample_dict(v, indent + 1)
+        elif hasattr(v, "shape"):
+            vals_str = ""
+            if k == "label":
+                vals_str = f"  -> {[str(v.flat[i]) for i in range(int(v.size))]}"
+            print(f"{prefix}{k}: shape={tuple(v.shape)} dtype={v.dtype}{vals_str}")
+        else:
+            print(f"{prefix}{k}: {type(v).__name__} = {v!r}")
 
 
 def print_structure_overview() -> None:
@@ -106,7 +99,7 @@ def print_structure_overview() -> None:
     print("  Top-level keys typically: flag, label, distance, data")
     print("  flag[location][modality] -> bool (e.g. audio / seismic present)")
     print("  label -> numpy object array of string class names (length 1+)")
-    print("  distance -> dict: label/name -> float (meters); may nest like other fields")
+    print("  distance -> dict: class_name -> float (meters)")
     print("  data[location][modality] -> tensor (e.g. audio [1, 10, 1600])")
     print()
     print("Concrete nested layout from first loadable train path:")
@@ -258,6 +251,11 @@ def main() -> None:
     train_path = index_dir / "train_index.txt"
     if train_path.is_file():
         print_structure_overview()
+        first_single: dict | None = None
+        first_multi: dict | None = None
+        first_single_path = ""
+        first_multi_path = ""
+
         for p in read_index_paths(train_path):
             try:
                 sample = torch.load(p, weights_only=False)
@@ -265,12 +263,33 @@ def main() -> None:
                 continue
             if not sample_has_audio_flag(sample):
                 continue
-            print(f"  file: {p}")
-            print_sample_structure(sample)
+            try:
+                combo = label_tuple_from_sample(sample)
+            except Exception:
+                continue
+            if first_single is None and len(combo) == 1:
+                first_single = sample
+                first_single_path = p
+            if first_multi is None and len(combo) > 1:
+                first_multi = sample
+                first_multi_path = p
+            if first_single is not None and first_multi is not None:
+                break
+
+        if first_single is not None:
+            print(f"--- single-label example: {first_single_path}")
+            print_sample_dict(first_single)
             print()
-            break
         else:
-            print("  (no loadable audio sample found for structure dump)")
+            print("  (no single-label audio sample found)")
+            print()
+
+        if first_multi is not None:
+            print(f"--- multi-label example: {first_multi_path}")
+            print_sample_dict(first_multi)
+            print()
+        else:
+            print("  (no multi-label audio sample found in train set)")
             print()
 
     all_stats: list[dict] = []

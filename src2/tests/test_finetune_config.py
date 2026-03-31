@@ -13,6 +13,7 @@ def _base_finetune_config(checkpoint_path, loss_name):
                 "model": "student_audio_deepsense_dw_large_mel",
                 "training": "finetune_cfg",
                 "checkpoint_path": str(checkpoint_path),
+                "task_name": "fine_tune_vehicle_classification",
             },
         },
         "models": {
@@ -48,4 +49,25 @@ def test_validate_finetune_config_rejects_unknown_loss(tmp_path):
 
     config = _base_finetune_config(checkpoint_path, loss_name="not_a_valid_loss")
     with pytest.raises(ValueError, match="Finetune expects loss_name"):
+        validate_finetune_config(config)
+
+
+def test_validate_finetune_config_accepts_bce_multilabel(tmp_path):
+    checkpoint_path = tmp_path / "dummy_checkpoint.pth"
+    torch.save({"model_state_dict": {}}, checkpoint_path)
+
+    config = _base_finetune_config(checkpoint_path, loss_name="bce_multilabel")
+    config["training_configs"]["finetune_cfg"]["multilabel_best_metric"] = "mAP"
+
+    _, _, _, _, training_cfg, resolved_checkpoint, _ = validate_finetune_config(config)
+    assert training_cfg["loss_name"] == "bce_multilabel"
+    assert resolved_checkpoint == str(checkpoint_path)
+
+
+def test_validate_finetune_config_bce_multilabel_requires_best_metric(tmp_path):
+    checkpoint_path = tmp_path / "dummy_checkpoint.pth"
+    torch.save({"model_state_dict": {}}, checkpoint_path)
+
+    config = _base_finetune_config(checkpoint_path, loss_name="bce_multilabel")
+    with pytest.raises(ValueError, match="multilabel_best_metric"):
         validate_finetune_config(config)

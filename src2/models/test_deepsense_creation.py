@@ -46,7 +46,7 @@ def test_model(config, model_key, batch_size=4):
     assert isinstance(output, dict), f"Expected dict, got {type(output)}"
     assert "logits" in output and "features" in output, f"Missing keys: {output.keys()}"
 
-    num_classes = config["vehicle_classification"]["num_classes"]
+    num_classes = config[config["task_name"]]["num_classes"]
     fc_dim = model_cfg["fc_dim"]
 
     assert output["logits"].shape == (batch_size, num_classes), \
@@ -65,6 +65,7 @@ def main():
     yaml_path = src2_dir / "data" / "Parkland.yaml"
     with open(yaml_path) as f:
         config = yaml.safe_load(f)
+    config["task_name"] = "fine_tune_vehicle_classification"
 
     test_model(config, "student_audio_deepsense_small")
     test_model(config, "student_audio_deepsense")

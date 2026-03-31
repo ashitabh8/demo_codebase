@@ -244,7 +244,7 @@ def build_simple_resnet_from_config(config: dict, model_key: str):
         modality_name: str
     """
     m_cfg = config["models"][model_key]
-    task_cfg = config["vehicle_classification"]
+    task_cfg = config[config["task_name"]]
 
     num_classes = task_cfg["num_classes"]
     location_name = config["location_names"][0]

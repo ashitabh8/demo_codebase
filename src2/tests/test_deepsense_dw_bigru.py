@@ -18,7 +18,9 @@ from models.create_models import create_single_modal_model
 def parkland_config():
     yaml_path = Path(__file__).parent.parent / "data" / "Parkland.yaml"
     with open(yaml_path) as f:
-        return yaml.safe_load(f)
+        cfg = yaml.safe_load(f)
+    cfg["task_name"] = "fine_tune_vehicle_classification"
+    return cfg
 
 
 def _mel_dummy(config, batch_size=2):
@@ -35,7 +37,7 @@ def test_dw_large_mel_bigru_supervised_shapes(parkland_config):
     cfg["models"][name]["pretrain_mode"] = False
     model = create_single_modal_model(cfg, name)
     model.eval()
-    num_classes = cfg["vehicle_classification"]["num_classes"]
+    num_classes = cfg[cfg["task_name"]]["num_classes"]
     out_dims = cfg["models"][name]["output_dims"]
     embed_dim = out_dims[-1]
     with torch.no_grad():
@@ -66,7 +68,7 @@ def test_dw_large_mel_legacy_unchanged(parkland_config):
     cfg["models"][name]["pretrain_mode"] = False
     model = create_single_modal_model(cfg, name)
     model.eval()
-    num_classes = cfg["vehicle_classification"]["num_classes"]
+    num_classes = cfg[cfg["task_name"]]["num_classes"]
     fc_dim = cfg["models"][name]["fc_dim"]
     with torch.no_grad():
         o = model(_mel_dummy(cfg))

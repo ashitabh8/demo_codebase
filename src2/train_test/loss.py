@@ -58,6 +58,28 @@ class CrossEntropyLossForDictOutput(nn.Module):
         return self.ce_loss(logits, target)
 
 
+class BCEWithLogitsMultilabelForDictOutput(nn.Module):
+    """
+    BCEWithLogitsLoss on classifier logits for multi-label targets.
+
+    Model output: dict with 'logits' [B, C] or raw tensor [B, C].
+    Target: float tensor [B, C] with values in {0.0, 1.0}.
+
+    Optional pos_weight (length C) is passed through to nn.BCEWithLogitsLoss
+    for per-class positive imbalance; supply via training_config bce_pos_weight.
+    """
+
+    def __init__(self, pos_weight=None):
+        super().__init__()
+        self.bce = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    def forward(self, model_output, target):
+        if isinstance(model_output, dict):
+            logits = model_output["logits"]
+        else:
+            logits = model_output
+        return self.bce(logits, target.float())
+
 
 # =============================================================================
 # NT-Xent Loss (SimCLR-style Self-Supervised Contrastive Loss)
@@ -252,9 +274,21 @@ def get_loss_function(training_config):
         logging.info(f"  Using NTXentLoss (temperature={temperature})")
         return NTXentLoss(temperature=temperature), loss_name
 
+    if loss_name == "bce_multilabel":
+        pos_weight = None
+        if "bce_pos_weight" in training_config:
+            lst = training_config["bce_pos_weight"]
+            if not isinstance(lst, list):
+                raise ValueError("bce_pos_weight must be a list of length C")
+            pos_weight = torch.tensor(lst, dtype=torch.float32)
+            logging.info(f"  Using BCEWithLogitsMultilabelForDictOutput (pos_weight len={len(lst)})")
+        else:
+            logging.info("  Using BCEWithLogitsMultilabelForDictOutput (no pos_weight)")
+        return BCEWithLogitsMultilabelForDictOutput(pos_weight=pos_weight), loss_name
+
     raise ValueError(
         f"Unknown loss function: {loss_name}. "
-        f"Supported: 'cross_entropy', 'ce_supcon', 'nt_xent'."
+        f"Supported: 'cross_entropy', 'ce_supcon', 'nt_xent', 'bce_multilabel'."
     )
 
 

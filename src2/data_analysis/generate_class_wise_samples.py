@@ -36,8 +36,8 @@ def get_parklad_samples_per_class(dataloader, config, device, num_samples_per_cl
         Each sample is a dictionary with 'data', 'label', and optionally 'idx'
     """
     # Get class names from config
-    class_names = config['vehicle_classification']['class_names']
-    num_classes = config['vehicle_classification']['num_classes']
+    class_names = config[config['task_name']]['class_names']
+    num_classes = config[config['task_name']]['num_classes']
     
     # Initialize dictionary to store samples per class
     # class_name -> list of samples

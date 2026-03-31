@@ -7,6 +7,11 @@ vehicle_classification:
         val_index_file: /home/tkimura4/data/datasets/ACIDS/random_partition_index_vehicle_classification/val_index.txt  
         test_index_file: /home/tkimura4/data/datasets/ACIDS/random_partition_index_vehicle_classification/test_index.txt 
         train_class_count_file: /home/tkimura4/data/datasets/ACIDS/random_partition_index_vehicle_classification/train_class_count.txt
+
+dataloader_configs:
+        acids_legacy_multiclass:
+                type: legacy_multiclass
+
 distance_classification:
         num_classes: 5
         class_names: ["5", "10", "25", "50", "75"]
@@ -230,14 +235,20 @@ experiments:
         only_audio_resnet18:
                 model: "student_audio_resnet"
                 training: "vanilla_supervised_ce"
+                task_name: vehicle_classification
+                dataloader: acids_legacy_multiclass
 
         cascade_stage1:
                 model: "student_audio_resnet"
                 training: "distill_resnet18_to_resnet"
+                task_name: vehicle_classification
+                dataloader: acids_legacy_multiclass
 
         cascade_stage2:
                 model: "student_audio_convonly"
                 training: "distill_resnet_to_convonly"
+                task_name: vehicle_classification
+                dataloader: acids_legacy_multiclass
 
 
 # =============================================================================

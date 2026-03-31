@@ -3,12 +3,32 @@ pretrain_index_file: /data/kara4/Parkland/time_data_partition/pretrain_index.txt
 
 # Index files directory for GQ: /data/misra8/GracesQuarters/index_files/2024-08-06-GQ-split-multiclass
 
+# Set task_name: fine_tune_vehicle_classification (top-level or via experiment) to use this task.
+# Pick dataloader via experiments.<name>.dataloader -> dataloader_configs.<key>.type
+fine_tune_vehicle_classification:
+        num_classes: 3
+        class_names: ["polaris", "warthog", "truck"]
+        train_index_file: /data/misra8/GracesQuarters/index_files/2024-08-06-GQ-split-multiclass/train_index.txt
+        val_index_file: /data/misra8/GracesQuarters/index_files/2024-08-06-GQ-split-multiclass/val_index.txt
+        test_index_file: /data/misra8/GracesQuarters/index_files/2024-08-06-GQ-split-multiclass/test_index.txt
+
+dataloader_configs:
+        parkland_single_label:
+                type: single_label_only
+        parkland_multilabel_distance:
+                type: multilabel_distance
+                distance_threshold_m: 10.0
+                distance_key: distance
+        parkland_legacy_multiclass:
+                type: legacy_multiclass
+
+# 7-class original config for reference:
 vehicle_classification:
-        num_classes: 7  # number of classes
+        num_classes: 7
         class_names: ["Polaris", "Warhog", "Truck", "motor", "tesla", "mustang", "walk"]
-        train_index_file: /data/kara4/Parkland/time_data_partition/train_index.txt
-        val_index_file: /data/kara4/Parkland/time_data_partition/val_index.txt  
-        test_index_file: /data/kara4/Parkland/time_data_partition/test_index.txt 
+        train_index_file: /data/kara4/Parkland/time_data_partition/train_index.txt    
+        val_index_file: /data/kara4/Parkland/time_data_partition/val_index.txt
+        test_index_file: /data/kara4/Parkland/time_data_partition/test_index.txt
 
 base_experiment_dir: /home/misra8/demo_codebase/src2/experiments
 
@@ -37,9 +57,9 @@ loss_name: "cross_entropy"
 repetition: 3
 
 batch_size_pretrain: 256
-batch_size: 128
+batch_size: 32
 num_workers: 4
-use_balanced_sampling: True
+use_balanced_sampling: False
 
 # Normalization
 # Options: "standard", "minmax", "maxabs", "none"
@@ -53,7 +73,7 @@ normalization:
         # method: "none"  # No normalization
 
 # Preprocessing mode: "fft" (default) or "mel"
-preprocess_mode: "fft"
+# preprocess_mode: "fft"
 sample_rate: 16000
 n_fft: 1600
 mel_bins: 80
@@ -478,7 +498,28 @@ training_configs:
                 loss_name: "ce_supcon"
                 supcon_temperature: 0.07
                 supcon_weight: 1.0
-                freeze_backbone: False
+                freeze_backbone: True
+                backbone_lr_scale: 0.01
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0003
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 5
+                        decay_epochs: 5
+                        decay_rate: 0.5
+
+        finetune_bce_multilabel_difflr:
+                type: "finetune"
+                epochs: 100
+                loss_name: "bce_multilabel"
+                multilabel_best_metric: "mAP" # "val_loss"
+                freeze_backbone: True
                 backbone_lr_scale: 0.01
                 optimizer:
                         name: "AdamW"
@@ -506,12 +547,19 @@ experiments:
         only_audio_original_resnet18:
                 model: "teacher_audio_resnet18"
                 training: "vanilla_supervised_ce"
+                task_name: fine_tune_vehicle_classification
+                dataloader: parkland_single_label
+                balance_background: true
+                preprocess_mode: "mel"
                 fixed_augmenters:
                         time_augmenters: ["no"]
                         freq_augmenters: ["no"]
         only_audio_resnet18:
                 model: "student_audio_resnet"
                 training: "vanilla_supervised_ce"
+                task_name: fine_tune_vehicle_classification
+                dataloader: parkland_single_label
+                preprocess_mode: "fft"
                 fixed_augmenters:
                         time_augmenters: ["no"]
                         freq_augmenters: ["no"]
@@ -519,6 +567,8 @@ experiments:
         only_audio_resnet18_supcon:
                 model: "teacher_audio_resnet18"
                 training: "vanilla_supervised_contrastive"
+                task_name: fine_tune_vehicle_classification
+                dataloader: parkland_single_label
                 fixed_augmenters:
                         time_augmenters: ["time_mask"]
                         freq_augmenters: ["freq_mask"]
@@ -526,6 +576,8 @@ experiments:
         cascade_stage1:
                 model: "student_audio_resnet"
                 training: "distill_resnet18_to_resnet"
+                task_name: fine_tune_vehicle_classification
+                dataloader: parkland_single_label
                 fixed_augmenters:
                         time_augmenters: ["time_mask"]
                         freq_augmenters: ["freq_mask"]
@@ -533,6 +585,8 @@ experiments:
         cascade_stage2:
                 model: "student_audio_convonly"
                 training: "distill_resnet_to_convonly"
+                task_name: fine_tune_vehicle_classification
+                dataloader: parkland_single_label
                 fixed_augmenters:
                         time_augmenters: ["time_mask"]
                         freq_augmenters: ["freq_mask"]
@@ -540,6 +594,8 @@ experiments:
         only_audio_deepsense_small:
                 model: "student_audio_deepsense_small"
                 training: "vanilla_supervised_ce"
+                task_name: fine_tune_vehicle_classification
+                dataloader: parkland_single_label
                 fixed_augmenters:
                         time_augmenters: ["no"]
                         freq_augmenters: ["no"]
@@ -547,6 +603,8 @@ experiments:
         only_audio_deepsense:
                 model: "student_audio_deepsense"
                 training: "vanilla_supervised_contrastive"
+                task_name: fine_tune_vehicle_classification
+                dataloader: parkland_single_label
                 fixed_augmenters:
                         time_augmenters: ["time_mask"]
                         freq_augmenters: ["freq_mask"]
@@ -554,6 +612,8 @@ experiments:
         only_audio_deepsense_dw:
                 model: "student_audio_deepsense_dw"
                 training: "vanilla_supervised_contrastive"
+                task_name: fine_tune_vehicle_classification
+                dataloader: parkland_single_label
                 fixed_augmenters:
                         time_augmenters: ["time_mask"]
                         freq_augmenters: ["freq_mask"]
@@ -561,6 +621,8 @@ experiments:
         only_audio_deepsense_dw_large:
                 model: "student_audio_deepsense_dw_large"
                 training: "vanilla_supervised_contrastive"
+                task_name: fine_tune_vehicle_classification
+                dataloader: parkland_single_label
                 fixed_augmenters:
                         time_augmenters: ["scaling", "time_mask", "time_mask"]
                         freq_augmenters: ["phase_shift", "freq_mask", "freq_mask"]
@@ -568,6 +630,8 @@ experiments:
         only_audio_deepsense_dw_mel:
                 model: "student_audio_deepsense_dw_mel"   # will be added in Task 4
                 training: "vanilla_supervised_contrastive"
+                task_name: fine_tune_vehicle_classification
+                dataloader: parkland_single_label
                 preprocess_mode: "mel"    # override for this experiment
                 fixed_augmenters:
                         time_augmenters: ["time_mask"]
@@ -575,6 +639,8 @@ experiments:
         only_audio_deepsense_dw_large_mel:
                 model: "student_audio_deepsense_dw_large_mel"
                 training: "vanilla_supervised_contrastive"
+                task_name: fine_tune_vehicle_classification
+                dataloader: parkland_single_label
                 preprocess_mode: "mel"
                 fixed_augmenters:
                         time_augmenters: ["scaling", "time_mask", "time_mask"]
@@ -617,6 +683,8 @@ experiments:
         finetune_audio_deepsense_dw_large_mel_bigru:
                 model: "student_audio_deepsense_dw_large_mel_bigru"
                 training: "finetune_supcon"
+                task_name: fine_tune_vehicle_classification
+                dataloader: parkland_single_label
                 preprocess_mode: "mel"
                 fixed_augmenters:
                         time_augmenters: ["scaling", "time_mask", "time_mask"]
@@ -626,6 +694,8 @@ experiments:
         finetune_audio_resnet_from_pretrain:
                 model: "teacher_audio_resnet18"
                 training: "finetune_supcon"
+                task_name: fine_tune_vehicle_classification
+                dataloader: parkland_single_label
                 fixed_augmenters:
                         time_augmenters: ["time_mask"]
                         freq_augmenters: ["freq_mask"]
@@ -634,6 +704,8 @@ experiments:
         finetune_audio_deepsense_dw_large_mel:
                 model: "student_audio_deepsense_dw_large_mel"
                 training: "finetune_ce"
+                task_name: fine_tune_vehicle_classification
+                dataloader: parkland_single_label
                 preprocess_mode: "mel"
                 fixed_augmenters:
                         time_augmenters: ["time_mask"]
@@ -644,6 +716,8 @@ experiments:
         finetune_audio_deepsense_dw_large_mel_supcon:
                 model: "student_audio_deepsense_dw_large_mel"
                 training: "finetune_supcon"
+                task_name: fine_tune_vehicle_classification
+                dataloader: parkland_single_label
                 preprocess_mode: "mel"
                 fixed_augmenters:
                         # time_augmenters: ["time_mask"]
@@ -655,7 +729,10 @@ experiments:
         finetune_audio_deepsense_dw_large_mel_supcon_difflr:
                 model: "student_audio_deepsense_dw_large_mel"
                 training: "finetune_supcon_difflr"
+                task_name: fine_tune_vehicle_classification
+                dataloader: parkland_single_label
                 preprocess_mode: "mel"
+                balance_background: true
                 fixed_augmenters:
                         time_augmenters: ["scaling", "time_mask", "time_mask"]
                         freq_augmenters: ["freq_mask", "freq_mask"]
