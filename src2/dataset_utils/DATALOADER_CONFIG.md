@@ -6,7 +6,8 @@ Supervised training uses `create_dataloaders(config)` from `dataset_utils.MultiM
 
 1. **Top-level** `dataloader_configs`: named blocks. Each block **must** set `type` to one of:
    - `legacy_multiclass` — return labels as stored in `.pt` (`weights_only=True` load when possible).
-   - `single_label_only` — drop samples with more than one label; map string labels to class indices via task `class_names`.
+   - `single_label_only` — drop samples with more than one label; map string labels to class indices via task `class_names`. Expects nested `sample['label']['label']` when `label` is a dict.
+   - `acids_vehicle_classification` — same filtering/mapping as single-label, but reads the class from `sample['label'][label_subkey]` (e.g. `vehicle_type` on ACIDS `.pt` files).
    - `multilabel_distance` — per-class binary targets from task `class_names` + sample distance; requires extra keys below.
 
 2. **Per experiment** (`experiments.<experiment_name>`): **must** set `dataloader` to a string key that exists in `dataloader_configs`. There is **no default**; missing or unknown keys raise immediately.
@@ -22,6 +23,12 @@ Only the key `type: legacy_multiclass` is allowed (no other keys).
 ### `single_label_only`
 
 Only `type: single_label_only` is allowed.
+
+### `acids_vehicle_classification`
+
+Required keys:
+
+- `label_subkey` (string, e.g. `vehicle_type`) — field under `sample['label']` used as the scalar / single-label value for class indexing.
 
 ### `multilabel_distance`
 

@@ -178,6 +178,7 @@ class MultiModalDataset(Dataset):
         class_names=None,
         distance_threshold_m=None,
         distance_key=None,
+        label_subkey=None,
     ):
         self.num_classes = num_classes
         self.multilabel_distance_targets = multilabel_distance_targets
@@ -187,6 +188,7 @@ class MultiModalDataset(Dataset):
         )
         self.distance_threshold_m = distance_threshold_m
         self.distance_key = distance_key
+        self.label_subkey = label_subkey
 
         if self.multilabel_distance_targets:
             if not self.class_names:
@@ -221,20 +223,27 @@ class MultiModalDataset(Dataset):
         if self.single_label_only:
             self._filter_to_single_label_samples()
 
-    @staticmethod
-    def _extract_label_field(sample, sample_path):
+    def _extract_label_field(self, sample, sample_path):
         if "label" not in sample:
             raise KeyError(
                 f"Sample missing required top-level 'label' key: {sample_path}"
             )
-        if isinstance(sample["label"], dict):
-            if "label" not in sample["label"]:
+        raw = sample["label"]
+        if isinstance(raw, dict):
+            if self.label_subkey is not None:
+                if self.label_subkey not in raw:
+                    raise KeyError(
+                        f"sample['label'] is a dict but missing required key "
+                        f"{self.label_subkey!r}. Available keys: {list(raw.keys())}"
+                    )
+                return raw[self.label_subkey]
+            if "label" not in raw:
                 raise KeyError(
                     "sample['label'] is a dict but missing required key 'label'. "
-                    f"Available keys: {list(sample['label'].keys())}"
+                    f"Available keys: {list(raw.keys())}"
                 )
-            return sample["label"]["label"]
-        return sample["label"]
+            return raw["label"]
+        return raw
 
     def _filter_to_single_label_samples(self):
         kept = []

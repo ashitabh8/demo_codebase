@@ -12,6 +12,7 @@ import argparse
 from collections import defaultdict
 from pathlib import Path
 
+import numpy as np
 import torch
 
 
@@ -88,7 +89,13 @@ def print_sample_dict(sample: dict, indent: int = 0) -> None:
         elif hasattr(v, "shape"):
             vals_str = ""
             if k == "label":
-                vals_str = f"  -> {[str(v.flat[i]) for i in range(int(v.size))]}"
+                if isinstance(v, torch.Tensor):
+                    flat = v.reshape(-1)
+                    vals_str = f"  -> {[str(flat[i].item()) for i in range(flat.numel())]}"
+                elif isinstance(v, np.ndarray):
+                    vals_str = f"  -> {[str(v.flat[i]) for i in range(int(v.size))]}"
+                else:
+                    vals_str = "  -> (label values omitted; use torch.Tensor or ndarray)"
             print(f"{prefix}{k}: shape={tuple(v.shape)} dtype={v.dtype}{vals_str}")
         else:
             print(f"{prefix}{k}: {type(v).__name__} = {v!r}")
