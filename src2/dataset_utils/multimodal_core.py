@@ -246,20 +246,26 @@ class MultiModalDataset(Dataset):
         return raw
 
     def _filter_to_single_label_samples(self):
+        has_bg_class = "background" in (self.class_names or [])
         kept = []
         dropped = 0
+        n_background = 0
         for sample_path in self.sample_files:
             sample = torch.load(sample_path, weights_only=False)
             raw_label = self._extract_label_field(sample, sample_path)
             n_labels = single_label_cardinality(raw_label)
             if n_labels == 1:
                 kept.append(sample_path)
+            elif n_labels == 0 and has_bg_class:
+                kept.append(sample_path)
+                n_background += 1
             else:
                 dropped += 1
         self.sample_files = kept
         logging.info(
-            "single_label_only enabled: kept %d samples, dropped %d multi-label samples",
+            "single_label_only enabled: kept %d samples (%d background), dropped %d multi-label samples",
             len(self.sample_files),
+            n_background,
             dropped,
         )
 
@@ -322,6 +328,15 @@ class MultiModalDataset(Dataset):
             return data, label_tensor, idx
 
         if self.single_label_only:
+            n_labels = single_label_cardinality(label)
+            if n_labels == 0:
+                if "background" not in (self.class_names or []):
+                    raise ValueError(
+                        f"Sample {self.sample_files[idx]} has no labels but 'background' is not in class_names. "
+                        "Add 'background' to class_names to include background samples."
+                    )
+                bg_idx = list(self.class_names).index("background")
+                return data, torch.tensor(bg_idx, dtype=torch.long), idx
             label_tensor = single_label_to_class_index_tensor(
                 label, self.class_names
             )

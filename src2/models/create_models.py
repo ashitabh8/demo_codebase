@@ -386,6 +386,12 @@ def create_deepsense_dw(config, model_config_key):
     output_dims = None
     if "output_dims" in model_cfg:
         output_dims = model_cfg["output_dims"]
+    w8a8 = False
+    if "w8a8" in model_cfg:
+        w8a8 = bool(model_cfg["w8a8"])
+    w8a16 = False
+    if "w8a16" in model_cfg:
+        w8a16 = bool(model_cfg["w8a16"])
 
     if use_bigru:
         logging.info(
@@ -394,6 +400,10 @@ def create_deepsense_dw(config, model_config_key):
         )
     if output_dims is not None:
         logging.info(f"  output_dims={output_dims}")
+    if w8a8:
+        logging.info("  w8a8=True  (QuantDWConv2d + QuantDWConv1d layers, act_bits=8 — calibrate before QAT)")
+    if w8a16:
+        logging.info("  w8a16=True (QuantDWConv2d + QuantDWConv1d layers, act_bits=16 — calibrate before QAT)")
 
     model = SingleModalDeepSenseDW(
         modality_name=active_modality,
@@ -416,6 +426,8 @@ def create_deepsense_dw(config, model_config_key):
         recurrent_dim=recurrent_dim,
         recurrent_layers=recurrent_layers,
         output_dims=output_dims,
+        w8a8=w8a8,
+        w8a16=w8a16,
     )
 
     total_params = sum(p.numel() for p in model.parameters())

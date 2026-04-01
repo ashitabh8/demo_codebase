@@ -194,7 +194,8 @@ class DeepSenseBackbone(nn.Module):
 
         if self.pretrain_mode:
             projection = self.projection_head(features)
-            return {"features": features, "projection": projection}
+            logits = self.class_layer(features)
+            return {"features": features, "projection": projection, "logits": logits}
 
         # Classify: → [B, num_classes]
         logits = self.class_layer(features)

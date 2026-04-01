@@ -29,6 +29,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+from models.W8A8Quant import log_w8a8_scales, has_w8a8_layers
 
 # ----------------------------------------------------------------------------
 # Logging helpers (input shapes + peak RAM)
@@ -1802,7 +1803,11 @@ def train(model, train_loader, val_loader, config, experiment_dir,
         writer.add_scalar('Learning_Rate', current_lr, epoch)
         if multilabel:
             writer.add_scalar('Metrics/val_mAP', val_results['mAP'], epoch)
-        
+
+        if has_w8a8_layers(model):
+            log_w8a8_scales(model, writer, epoch)
+
+
         # Confusion matrix logging (every 5 epochs or last epoch)
         if not multilabel and ((epoch + 1) % 5 == 0 or epoch == num_epochs - 1):
             train_cm = calculate_confusion_matrix(all_train_preds, all_train_labels, num_classes)
@@ -2190,6 +2195,9 @@ def train_vanilla_supervised_contrastive(
         writer.add_scalar("Accuracy/val", epoch_val_acc, epoch)
         writer.add_scalar("Learning_Rate", current_lr, epoch)
 
+        if has_w8a8_layers(model):
+            log_w8a8_scales(model, writer, epoch)
+
         if (epoch + 1) % 5 == 0 or epoch == num_epochs - 1:
             train_cm = calculate_confusion_matrix(all_train_preds, all_train_labels, num_classes)
             train_cm_fig = plot_confusion_matrix(train_cm, class_names=class_names, normalize=True)
@@ -2509,10 +2517,10 @@ def validate_pretrain_config(config):
 
     training_config = training_configs[training_config_name]
     train_type = training_config.get("type")
-    if train_type != "ssl_pretrain":
+    if train_type not in ("ssl_pretrain", "supervised_pretrain"):
         raise ValueError(
             f"Training config '{training_config_name}' has type='{train_type}', "
-            "expected 'ssl_pretrain' for pretraining."
+            "expected 'ssl_pretrain' or 'supervised_pretrain' for pretraining."
         )
 
     pretrain_index_file = config.get("pretrain_index_file")
@@ -3185,8 +3193,13 @@ def pretrain(
     best_epoch = 0
     best_checkpoint_path = str(models_dir / "best_pretrain_model.pth")
 
+    from train_test.loss import SupervisedPretrainLoss
+    pretrain_mode_label = (
+        "Supervised SupCon + CE" if isinstance(loss_fn, SupervisedPretrainLoss)
+        else "NT-Xent / SimCLR (self-supervised)"
+    )
     logger.info("=" * 80)
-    logger.info("Starting SSL Pretraining (NT-Xent / SimCLR)")
+    logger.info(f"Starting Pretraining ({pretrain_mode_label})")
     logger.info(f"  Device: {device}")
     logger.info(f"  Epochs: {num_epochs}")
     logger.info(f"  Batches per epoch: {len(train_loader)}")
@@ -3241,8 +3254,8 @@ def pretrain(
 
             # ----------------------------------------------------------
             # Forward pass through the model in pretrain_mode=True.
-            # Model returns {'features': [B, feat_dim], 'projection': [B, proj_dim]}.
-            # NT-Xent loss is computed on projection only.
+            # Model returns {'features': [B, feat_dim], 'projection': [B, proj_dim],
+            #                'logits': [B, C]} (logits used only by SupervisedPretrainLoss).
             # ----------------------------------------------------------
             optimizer.zero_grad()
             out1 = model(view1)
@@ -3252,9 +3265,14 @@ def pretrain(
             proj2 = out2["projection"]    # [B, proj_dim]
             feat1 = out1["features"]      # [B, feat_dim] — for metrics/viz only
 
-            # NT-Xent loss: pulls positive pairs (same sample, different views)
-            # together and pushes apart all other in-batch pairs.
-            loss = loss_fn(proj1, proj2)
+            # Loss dispatch:
+            #   SupervisedPretrainLoss — supervised SupCon + weighted CE; needs labels.
+            #   NTXentLoss (default)   — self-supervised; operates on projections only.
+            from train_test.loss import SupervisedPretrainLoss
+            if isinstance(loss_fn, SupervisedPretrainLoss):
+                loss = loss_fn(out1, out2, labels)
+            else:
+                loss = loss_fn(proj1, proj2)
             loss.backward()
 
             if clip_grad is not None:

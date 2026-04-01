@@ -6,8 +6,8 @@ pretrain_index_file: /data/kara4/Parkland/time_data_partition/pretrain_index.txt
 # Set task_name: fine_tune_vehicle_classification (top-level or via experiment) to use this task.
 # Pick dataloader via experiments.<name>.dataloader -> dataloader_configs.<key>.type
 fine_tune_vehicle_classification:
-        num_classes: 3
-        class_names: ["polaris", "warthog", "truck"]
+        num_classes: 4
+        class_names: ["polaris", "warthog", "truck", "background"]
         train_index_file: /data/misra8/GracesQuarters/index_files/2024-08-06-GQ-split-multiclass/train_index.txt
         val_index_file: /data/misra8/GracesQuarters/index_files/2024-08-06-GQ-split-multiclass/val_index.txt
         test_index_file: /data/misra8/GracesQuarters/index_files/2024-08-06-GQ-split-multiclass/test_index.txt
@@ -30,7 +30,7 @@ vehicle_classification:
         val_index_file: /data/kara4/Parkland/time_data_partition/val_index.txt
         test_index_file: /data/kara4/Parkland/time_data_partition/test_index.txt
 
-base_experiment_dir: /home/misra8/demo_codebase/src2/experiments
+base_experiment_dir: /home/madhav5/demo_codebase/src2/experiments
 
 cross_entropy:
         name: "cross_entropy"
@@ -59,7 +59,7 @@ repetition: 3
 batch_size_pretrain: 256
 batch_size: 32
 num_workers: 4
-use_balanced_sampling: False
+use_balanced_sampling: True
 
 # Normalization
 # Options: "standard", "minmax", "maxabs", "none"
@@ -274,6 +274,48 @@ models:
                 proj_hidden_dim: 256
                 proj_out_dim: 128
 
+        # W8A8 QAT variant of student_audio_deepsense_dw_large_mel.
+        # Identical architecture but uses QuantDWConv2d + QuantDWConv1d layers.
+        # Workflow: pretrain (or load float32 checkpoint) → calibrate → QAT finetune.
+        student_audio_deepsense_dw_large_mel_w8a8:
+                model_source: "create_single_modal_model"
+                model_type: "deepsense_dw"
+                active_modality: "audio"
+                in_channels: 1
+                in_spectrum_len: 80
+                channels_freq:     [128, 256, 512, 512, 512]
+                kernel_sizes_freq: [[1, 5], [1, 3], [1, 3], [1, 3], [1, 3]]
+                strides_freq:      [[1, 2], [1, 2], [1, 1], [1, 1], [1, 1]]
+                temporal_channels: 512
+                num_temporal_layers: 6
+                temporal_kernel: 3
+                fc_dim: 512
+                dropout_ratio: 0.35
+                proj_hidden_dim: 256
+                proj_out_dim: 128
+                w8a8: true
+
+        # W8A16 QAT variant — identical architecture to w8a8 but activations
+        # use INT16 range [-32768, 32767] instead of INT8 [-128, 127].
+        # Higher activation fidelity, same INT8 weight compression.
+        student_audio_deepsense_dw_large_mel_w8a16:
+                model_source: "create_single_modal_model"
+                model_type: "deepsense_dw"
+                active_modality: "audio"
+                in_channels: 1
+                in_spectrum_len: 80
+                channels_freq:     [128, 256, 512, 512, 512]
+                kernel_sizes_freq: [[1, 5], [1, 3], [1, 3], [1, 3], [1, 3]]
+                strides_freq:      [[1, 2], [1, 2], [1, 1], [1, 1], [1, 1]]
+                temporal_channels: 512
+                num_temporal_layers: 6
+                temporal_kernel: 3
+                fc_dim: 512
+                dropout_ratio: 0.35
+                proj_hidden_dim: 256
+                proj_out_dim: 128
+                w8a16: true
+
         # Student 5: Audio-only DeepSense Depthwise (CMSIS-NN friendly, no GRU)
         # Freq conv: 4-layer DW-sep, finer initial compression ([1,20]/stride-10 vs [1,80]/stride-80)
         # Temporal: 4-layer DW-sep Conv1d over 10 intervals (replaces GRU)
@@ -452,6 +494,103 @@ training_configs:
             decay_epochs: 2
             decay_rate: 0.2
 
+        # Supervised contrastive pretraining: replaces NT-Xent with two label-aware
+        # objectives to improve Warhog/Truck separation before fine-tuning.
+        #
+        # Suggestion #2 — hard-pair SupCon temperature:
+        #   Cross-class negatives where BOTH anchors are Warhog (1) or Truck (2) use
+        #   supcon_hard_pair_temperature=0.03 instead of the global 0.07.
+        #   Lower τ sharpens the softmax on those pairs, forcing the backbone to push
+        #   Warhog and Truck further apart in projection space.
+        #
+        # Suggestion #3 — class-weighted CE:
+        #   Warhog (class 1) is boosted to weight 2.5 so the classifier head learns
+        #   to be more sensitive to Warhog features during pretraining itself.
+        #   Other classes retain weight 1.0.
+        supervised_pretrain_supcon:
+          type: "supervised_pretrain"
+          epochs: 50
+          loss_name: "supcon_pretrain"
+          supcon_temperature: 0.07
+          supcon_weight: 1.0
+          ce_weight: 0.5
+          # class order: [Polaris(0), Warhog(1), Truck(2), motor(3), tesla(4), mustang(5), walk(6)]
+          ce_class_weights: [1.0, 2.5, 1.0, 1.0, 1.0, 1.0, 1.0]
+          supcon_hard_pair_classes: [1, 2]
+          supcon_hard_pair_temperature: 0.03
+          pretrain_subset_ratio: 1.0
+          pretrain_subset_mode: "global"
+          pretrain_seed: 42
+          viz_every_n_epochs: 10
+          optimizer:
+            name: "AdamW"
+            start_lr: 0.0003
+            warmup_lr: 0.000001
+            min_lr: 0.000001
+            clip_grad: 5.0
+            weight_decay: 0.05
+          lr_scheduler:
+            name: "cosine"
+            warmup_prefix: True
+            warmup_epochs: 10
+            decay_epochs: 2
+            decay_rate: 0.2
+
+        # W8A8 QAT pretraining config.
+        # Uses the same supervised SupCon + CE objective as supervised_pretrain_supcon
+        # but on a model with quantized conv layers.  A calibration pass
+        # (w8a8_calib_batches) runs automatically before training starts.
+        w8a8_supervised_pretrain:
+          type: "supervised_pretrain"
+          epochs: 50
+          loss_name: "supcon_pretrain"
+          supcon_temperature: 0.07
+          supcon_weight: 1.0
+          ce_weight: 0.5
+          ce_class_weights: [1.0, 2.5, 1.0, 1.0, 1.0, 1.0, 1.0]
+          supcon_hard_pair_classes: [1, 2]
+          supcon_hard_pair_temperature: 0.03
+          pretrain_subset_ratio: 1.0
+          pretrain_subset_mode: "global"
+          pretrain_seed: 42
+          viz_every_n_epochs: 10
+          w8a8_calib_batches: 50
+          optimizer:
+            name: "AdamW"
+            start_lr: 0.0001
+            warmup_lr: 0.000001
+            min_lr: 0.000001
+            clip_grad: 5.0
+            weight_decay: 0.05
+          lr_scheduler:
+            name: "cosine"
+            warmup_prefix: True
+            warmup_epochs: 5
+
+        # W8A8 QAT finetuning config.
+        # Start from a float32 pretrained checkpoint; calibration runs
+        # automatically, then QAT finetuning proceeds with a lower LR.
+        w8a8_qat_finetune:
+          type: "finetune"
+          epochs: 50
+          loss_name: "ce_supcon"
+          supcon_temperature: 0.07
+          supcon_weight: 1.0
+          freeze_backbone: False
+          backbone_lr_scale: 0.1
+          w8a8_calib_batches: 50
+          optimizer:
+            name: "AdamW"
+            start_lr: 0.00003
+            warmup_lr: 0.000001
+            min_lr: 0.000001
+            clip_grad: 1.0
+            weight_decay: 0.05
+          lr_scheduler:
+            name: "cosine"
+            warmup_prefix: True
+            warmup_epochs: 5
+
         finetune_ce:
           type: "finetune"
           epochs: 100
@@ -498,8 +637,8 @@ training_configs:
                 loss_name: "ce_supcon"
                 supcon_temperature: 0.07
                 supcon_weight: 1.0
-                freeze_backbone: True
-                backbone_lr_scale: 0.01
+                freeze_backbone: False
+                backbone_lr_scale: 0.1
                 optimizer:
                         name: "AdamW"
                         start_lr: 0.0003
@@ -672,6 +811,17 @@ experiments:
                         time_augmenters: ["scaling", "time_mask", "time_mask"]
                         freq_augmenters: ["freq_mask"]
 
+        # Supervised pretraining variant: uses class labels + hard-pair temperature
+        # to explicitly improve Warhog/Truck separation in the representation space.
+        # Run with: python pretrain.py --experiment_name pretrain_audio_deepsense_dw_large_mel_supcon
+        pretrain_audio_deepsense_dw_large_mel_supcon:
+                model: "student_audio_deepsense_dw_large_mel"
+                training: "supervised_pretrain_supcon"
+                preprocess_mode: "mel"
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
         pretrain_audio_deepsense_dw_large_mel_bigru:
                 model: "student_audio_deepsense_dw_large_mel_bigru"
                 training: "ssl_pretrain_ce"
@@ -732,11 +882,47 @@ experiments:
                 task_name: fine_tune_vehicle_classification
                 dataloader: parkland_single_label
                 preprocess_mode: "mel"
-                balance_background: true
                 fixed_augmenters:
                         time_augmenters: ["scaling", "time_mask", "time_mask"]
                         freq_augmenters: ["freq_mask", "freq_mask"]
-                checkpoint_path: "/home/misra8/demo_codebase/src2/experiments/20260327_211014_pretrain_pretrain_audio_deepsense_dw_large_mel/models/best_pretrain_model.pth"
+                checkpoint_path: "/home/madhav5/demo_codebase/src2/experiments/20260331_144131_pretrain_pretrain_audio_deepsense_dw_large_mel/models/best_pretrain_model.pth"
+
+        # W8A8 QAT pretrain experiment.
+        # Run: python pretrain.py --experiment_name pretrain_audio_deepsense_dw_large_mel_w8a8 \
+        #          --yaml_path ../data/Parkland.yaml --gpu 0
+        pretrain_audio_deepsense_dw_large_mel_w8a8:
+                model: "student_audio_deepsense_dw_large_mel_w8a8"
+                training: "w8a8_supervised_pretrain"
+                preprocess_mode: "mel"
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask", "freq_mask"]
+
+        # W8A8 QAT finetune experiment.
+        # Update checkpoint_path to your latest pretrain run before launching.
+        # Run: python finetune.py --experiment_name finetune_audio_deepsense_dw_large_mel_w8a8 \
+        #          --yaml_path ../data/Parkland.yaml --gpu 0
+        finetune_audio_deepsense_dw_large_mel_w8a8:
+                model: "student_audio_deepsense_dw_large_mel_w8a8"
+                training: "w8a8_qat_finetune"
+                preprocess_mode: "mel"
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask", "freq_mask"]
+                checkpoint_path: "/home/madhav5/demo_codebase/src2/experiments/20260329_021437_finetune_finetune_audio_deepsense_dw_large_mel_supcon_difflr/models/best_model.pth"
+
+        # W8A16 QAT finetune experiment.
+        # Same float32 checkpoint as W8A8 — only activation precision changes.
+        # Run: python finetune.py --experiment_name finetune_audio_deepsense_dw_large_mel_w8a16 \
+        #          --yaml_path ../data/Parkland.yaml --gpu 0
+        finetune_audio_deepsense_dw_large_mel_w8a16:
+                model: "student_audio_deepsense_dw_large_mel_w8a16"
+                training: "w8a8_qat_finetune"
+                preprocess_mode: "mel"
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask", "freq_mask"]
+                checkpoint_path: "/home/madhav5/demo_codebase/src2/experiments/20260329_021437_finetune_finetune_audio_deepsense_dw_large_mel_supcon_difflr/models/best_model.pth"
 
 # quantization:
 #         enable: False

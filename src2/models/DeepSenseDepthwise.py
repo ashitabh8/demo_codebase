@@ -32,6 +32,7 @@ import torch
 import torch.nn as nn
 
 from models.RecurrentModule import RecurrentBlock
+from models.QuantBase import QuantDWConv2d, QuantDWConv1d
 
 
 # ---------------------------------------------------------------------------
@@ -233,8 +234,13 @@ class DeepSenseDepthwiseBackbone(nn.Module):
         recurrent_dim: int = 256,
         recurrent_layers: int = 2,
         output_dims=None,
+        w8a8: bool = False,
+        w8a16: bool = False,
     ):
         super().__init__()
+
+        if w8a8 and w8a16:
+            raise ValueError("w8a8 and w8a16 are mutually exclusive; set only one.")
 
         if not (len(channels_freq) == len(kernel_sizes_freq) == len(strides_freq)):
             raise ValueError(
@@ -244,11 +250,18 @@ class DeepSenseDepthwiseBackbone(nn.Module):
         if num_temporal_layers < 1:
             raise ValueError(f"num_temporal_layers must be >= 1, got {num_temporal_layers}")
 
+        self.w8a8 = w8a8
+        self.w8a16 = w8a16
+        _act_bits = 16 if w8a16 else 8
+
         # Frequency DW-sep conv stack
         freq_layers = []
         in_ch = in_channels
         for out_ch, k, s in zip(channels_freq, kernel_sizes_freq, strides_freq):
-            freq_layers.append(DSDWConvLayer(in_ch, out_ch, k, s, dropout_ratio))
+            if w8a8 or w8a16:
+                freq_layers.append(QuantDWConv2d(in_ch, out_ch, k, s, dropout_ratio, act_bits=_act_bits))
+            else:
+                freq_layers.append(DSDWConvLayer(in_ch, out_ch, k, s, dropout_ratio))
             in_ch = out_ch
         self.freq_stack = nn.ModuleList(freq_layers)
 
@@ -259,9 +272,14 @@ class DeepSenseDepthwiseBackbone(nn.Module):
         # Temporal DW-sep conv stack
         temporal_layers = []
         for _ in range(num_temporal_layers):
-            temporal_layers.append(
-                DSTemporalDWLayer(temporal_channels, temporal_kernel, dropout_ratio)
-            )
+            if w8a8 or w8a16:
+                temporal_layers.append(
+                    QuantDWConv1d(temporal_channels, temporal_kernel, dropout_ratio, act_bits=_act_bits)
+                )
+            else:
+                temporal_layers.append(
+                    DSTemporalDWLayer(temporal_channels, temporal_kernel, dropout_ratio)
+                )
         self.temporal_stack = nn.ModuleList(temporal_layers)
 
         self.use_bigru = use_bigru
@@ -338,7 +356,8 @@ class DeepSenseDepthwiseBackbone(nn.Module):
 
         if self.pretrain_mode:
             projection = self.projection_head(features)
-            return {"features": features, "projection": projection}
+            logits = self.class_layer(features)
+            return {"features": features, "projection": projection, "logits": logits}
 
         logits = self.class_layer(features)
         return {'logits': logits, 'features': features}
@@ -381,6 +400,8 @@ class SingleModalDeepSenseDW(nn.Module):
         recurrent_dim: int = 256,
         recurrent_layers: int = 2,
         output_dims=None,
+        w8a8: bool = False,
+        w8a16: bool = False,
     ):
         super().__init__()
         self.modality_name = modality_name
@@ -405,6 +426,8 @@ class SingleModalDeepSenseDW(nn.Module):
             recurrent_dim=recurrent_dim,
             recurrent_layers=recurrent_layers,
             output_dims=output_dims,
+            w8a8=w8a8,
+            w8a16=w8a16,
         )
 
     def forward(self, freq_x: dict) -> dict:

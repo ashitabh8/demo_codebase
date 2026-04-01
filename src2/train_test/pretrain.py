@@ -21,6 +21,7 @@ from dataset_utils.parse_args_utils import get_config
 from dataset_utils.MultiModalDataLoader import create_pretrain_dataloader
 from data_augmenter import create_augmenter, apply_augmentation
 from models.create_models import create_single_modal_model
+from models.W8A8Quant import calibrate_w8a8, has_w8a8_layers
 from train_test.loss import get_loss_function
 from train_test.train_test_utils import (
     setup_experiment_dir,
@@ -121,6 +122,24 @@ def main():
         config["models"][model_name]["pretrain_mode"] = True
         model = create_single_modal_model(config, model_name)
         logging.info(f"Model created: {model_name}")
+
+        # W8A8 calibration (if the model uses quantized layers)
+        if has_w8a8_layers(model):
+            import torch
+            _device = torch.device(
+                f"cuda:{config.get('gpu', 0)}" if torch.cuda.is_available() else "cpu"
+            )
+            n_calib = int(training_config.get("w8a8_calib_batches", 50))
+            logging.info(
+                "\nRunning W8A8 activation calibration (%d batches)...", n_calib
+            )
+            calibrate_w8a8(
+                model, train_loader, _device,
+                n_batches=n_calib,
+                augmenter=augmenter,
+                apply_augmentation_fn=apply_augmentation,
+            )
+            logging.info("W8A8 calibration done — QAT fake-quant enabled.\n")
 
         # ====================================================================
         # Setup Loss Function

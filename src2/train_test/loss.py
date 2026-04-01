@@ -5,6 +5,8 @@ This module provides a flexible interface for different loss functions.
 Currently supports CrossEntropyLoss, with easy extension for future loss functions.
 """
 
+from typing import List, Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -286,9 +288,42 @@ def get_loss_function(training_config):
             logging.info("  Using BCEWithLogitsMultilabelForDictOutput (no pos_weight)")
         return BCEWithLogitsMultilabelForDictOutput(pos_weight=pos_weight), loss_name
 
+    if loss_name == "supcon_pretrain":
+        temperature = float(training_config.get("supcon_temperature", 0.07))
+        supcon_weight = float(training_config.get("supcon_weight", 1.0))
+        ce_weight = float(training_config.get("ce_weight", 1.0))
+
+        cw_list = training_config.get("ce_class_weights", None)
+        class_weights = torch.tensor(cw_list, dtype=torch.float32) if cw_list else None
+
+        hard_pair_classes = training_config.get("supcon_hard_pair_classes", None)
+        hard_pair_temp = training_config.get("supcon_hard_pair_temperature", None)
+        if hard_pair_temp is not None:
+            hard_pair_temp = float(hard_pair_temp)
+
+        logging.info(
+            "  Using SupervisedPretrainLoss "
+            f"(temperature={temperature}, supcon_weight={supcon_weight}, ce_weight={ce_weight})"
+        )
+        if class_weights is not None:
+            logging.info(f"  ce_class_weights={cw_list}")
+        if hard_pair_classes is not None:
+            logging.info(
+                f"  hard_pair_classes={hard_pair_classes}, "
+                f"hard_pair_temperature={hard_pair_temp}"
+            )
+        return SupervisedPretrainLoss(
+            temperature=temperature,
+            supcon_weight=supcon_weight,
+            class_weights=class_weights,
+            hard_pair_classes=hard_pair_classes,
+            hard_pair_temperature=hard_pair_temp,
+            ce_weight=ce_weight,
+        ), loss_name
+
     raise ValueError(
         f"Unknown loss function: {loss_name}. "
-        f"Supported: 'cross_entropy', 'ce_supcon', 'nt_xent', 'bce_multilabel'."
+        f"Supported: 'cross_entropy', 'ce_supcon', 'nt_xent', 'bce_multilabel', 'supcon_pretrain'."
     )
 
 
@@ -394,6 +429,177 @@ class CrossEntropyPlusSupConLoss(nn.Module):
         # Testing mode: only one set of outputs => CE only.
         logits, _ = self._extract_logits_and_features(model_output)
         return self.ce_loss(logits, target)
+
+
+class SupervisedPretrainLoss(nn.Module):
+    """
+    Supervised contrastive pretraining loss.
+
+    Replaces NT-Xent with two label-aware objectives:
+
+    1. Supervised SupCon on projections (Khosla et al., 2020):
+       All same-class pairs across both augmented views are treated as positives,
+       not just the same-sample pair. This gives a much stronger learning signal
+       than NT-Xent: Warhog samples from different recordings will be pulled
+       together, and Warhog/Truck pairs will be explicitly pushed apart.
+
+    2. Class-weighted CE on logits from the model's classifier head:
+       The model's class_layer (which exists in pretrain_mode but was previously
+       unused) is also trained here. Boosting the weight on hard-to-distinguish
+       classes (e.g. Warhog) nudges the backbone to form a cleaner decision
+       boundary for those classes before fine-tuning begins.
+
+    Hard-pair temperature (suggestion #2):
+       For negative pairs where BOTH anchors belong to the user-specified
+       hard_pair_classes (e.g. Warhog=1, Truck=2), the SupCon temperature is
+       lowered to hard_pair_temperature. A lower τ sharpens the softmax,
+       making the loss penalise those cross-class similarities more strongly
+       and forcing the backbone to better separate Warhog from Truck.
+
+    Args:
+        temperature:           Default SupCon temperature τ for all pairs.
+        supcon_weight:         Scalar weight on the SupCon term.
+        class_weights:         Optional [C] float tensor of per-class CE weights
+                               (suggestion #3). Move to correct device at forward time.
+        hard_pair_classes:     Optional list of class indices forming the hard pair
+                               (e.g. [1, 2] for Warhog and Truck).
+        hard_pair_temperature: τ applied to cross-class negatives within hard_pair_classes.
+                               Must be ≤ temperature.
+        ce_weight:             Scalar weight on the CE term. Set to 0.0 to disable CE.
+    """
+
+    def __init__(
+        self,
+        temperature: float = 0.07,
+        supcon_weight: float = 1.0,
+        class_weights: Optional[torch.Tensor] = None,
+        hard_pair_classes: Optional[List[int]] = None,
+        hard_pair_temperature: Optional[float] = None,
+        ce_weight: float = 1.0,
+    ):
+        super().__init__()
+        self.temperature = temperature
+        self.supcon_weight = supcon_weight
+        self.class_weights = class_weights
+        self.hard_pair_classes = list(hard_pair_classes) if hard_pair_classes else None
+        self.hard_pair_temperature = float(hard_pair_temperature) if hard_pair_temperature is not None else None
+        self.ce_weight = ce_weight
+
+    def _build_temperature_matrix(
+        self, labels_2v: torch.Tensor, n: int
+    ) -> torch.Tensor:
+        """
+        Build an [n, n] temperature matrix.
+
+        Default value is self.temperature everywhere.  For positions (i, j)
+        where BOTH labels are in hard_pair_classes AND the labels differ
+        (i.e. cross-class hard negatives), the temperature is overridden to
+        hard_pair_temperature, which sharpens the loss for those pairs.
+        """
+        temp = torch.full(
+            (n, n), self.temperature, dtype=torch.float32, device=labels_2v.device
+        )
+        if self.hard_pair_classes is not None and self.hard_pair_temperature is not None:
+            hard = torch.tensor(
+                self.hard_pair_classes, dtype=torch.long, device=labels_2v.device
+            )
+            in_hard = torch.isin(labels_2v, hard)                          # [n]
+            both_hard = in_hard.unsqueeze(1) & in_hard.unsqueeze(0)        # [n, n]
+            diff_class = labels_2v.unsqueeze(1) != labels_2v.unsqueeze(0)  # [n, n]
+            hard_neg_mask = both_hard & diff_class
+            temp[hard_neg_mask] = self.hard_pair_temperature
+        return temp
+
+    def _supcon_loss(
+        self,
+        proj1: torch.Tensor,
+        proj2: torch.Tensor,
+        labels: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Two-view supervised SupCon with per-pair temperature.
+
+        Concatenates both augmented views into a [2B, D] matrix.
+        Positives = all pairs sharing the same class label (excluding self).
+        The temperature matrix applies a lower τ to hard-pair cross-class negatives.
+        """
+        z = F.normalize(torch.cat([proj1, proj2], dim=0), dim=1)  # [2B, D]
+        labels_2v = torch.cat([labels, labels], dim=0)             # [2B]
+        n = z.shape[0]
+
+        temp_matrix = self._build_temperature_matrix(labels_2v, n)  # [2B, 2B]
+        sim = torch.matmul(z, z.T) / temp_matrix                    # [2B, 2B]
+
+        # Numerical stability: subtract row-wise max before exp.
+        sim_max, _ = sim.max(dim=1, keepdim=True)
+        sim = sim - sim_max.detach()
+
+        self_mask = torch.eye(n, dtype=torch.bool, device=z.device)
+        exp_sim = torch.exp(sim).masked_fill(self_mask, 0.0)
+        denom = exp_sim.sum(dim=1, keepdim=True)
+        log_prob = sim - torch.log(denom + 1e-12)  # [2B, 2B]
+
+        # Positive mask: same class label, not self.
+        pos_mask = (
+            (labels_2v.unsqueeze(1) == labels_2v.unsqueeze(0)) & (~self_mask)
+        )
+        pos_count = pos_mask.sum(dim=1).float()
+        mean_log_pos = (log_prob * pos_mask.float()).sum(dim=1) / pos_count.clamp(min=1.0)
+
+        valid = (pos_count > 0).float()
+        return -(mean_log_pos * valid).sum() / valid.sum().clamp(min=1.0)
+
+    @staticmethod
+    def _valid_label_mask(labels: torch.Tensor, n_classes: int) -> torch.Tensor:
+        """Return a boolean mask of samples whose labels are in [0, n_classes)."""
+        return (labels >= 0) & (labels < n_classes)
+
+    def _weighted_ce(
+        self, logits: torch.Tensor, labels: torch.Tensor, valid: torch.Tensor
+    ) -> torch.Tensor:
+        logits = logits[valid]
+        labels = labels[valid]
+        if logits.shape[0] == 0:
+            return torch.zeros((), device=logits.device, dtype=logits.dtype)
+        w = self.class_weights.to(logits.device) if self.class_weights is not None else None
+        return F.cross_entropy(logits, labels, weight=w)
+
+    def forward(
+        self,
+        out1: dict,
+        out2: dict,
+        labels: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Args:
+            out1, out2: Model output dicts. Must contain 'projection' key.
+                        'logits' key is used for CE when ce_weight > 0.
+            labels:     [B] class indices (long tensor on the correct device).
+                        Samples with labels outside [0, n_classes) are silently
+                        skipped (pretrain data may include extra classes).
+        Returns:
+            Scalar loss.
+        """
+        proj1 = out1["projection"]
+        proj2 = out2["projection"]
+
+        n_classes = out1["logits"].shape[1] if "logits" in out1 else None
+        valid = (
+            self._valid_label_mask(labels, n_classes)
+            if n_classes is not None
+            else torch.ones(labels.shape[0], dtype=torch.bool, device=labels.device)
+        )
+
+        supcon = self._supcon_loss(proj1[valid], proj2[valid], labels[valid])
+
+        if self.ce_weight > 0.0 and "logits" in out1:
+            ce = 0.5 * (
+                self._weighted_ce(out1["logits"], labels, valid)
+                + self._weighted_ce(out2["logits"], labels, valid)
+            )
+            return self.supcon_weight * supcon + self.ce_weight * ce
+
+        return self.supcon_weight * supcon
 
 
 def convert_to_one_hot(labels, num_classes):

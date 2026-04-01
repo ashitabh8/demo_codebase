@@ -10,6 +10,9 @@ A flexible framework for training compressed neural networks using distillation 
   - [Model Zoo](#2-model-zoo-defining-models)
   - [Experiments](#3-distillation-experiments)
 - [Running Training](#running-training)
+- [Quantization (Weight-Only QAT)](#quantization-weight-only-qat)
+- [Checkpointing & Finetuning](#checkpointing--finetuning)
+- [Testing Trained Models](#testing-trained-models)
 - [Monitoring with TensorBoard](#monitoring-with-tensorboard)
 
 ---
@@ -35,7 +38,7 @@ conda activate cenv
 conda activate cenv
 
 # Run a quick 2-epoch test with early exit model
-cd <your_path>/baseline/src2/train_test
+cd <your_path>/demo_codebase/src2/train_test
 python train.py -experiment_name only_audio_resnet_early_exit -yaml_path ../data/ACIDS.yaml -gpu 0
 ```
 
@@ -148,6 +151,25 @@ student_audio_resnet:
     early_exits: [1, 2]  # Add early exits at stages 1 and 2
 ```
 
+**ResNet Simple (with optional weight-only quantization):**
+```yaml
+student_audio_resnet:
+    model_source: "create_single_modal_model"
+    model_type: "resnet_simple"
+    active_modality: "audio"
+    layers: [1, 1, 1, 1]
+    filter_sizes: [16, 32, 48, 96]
+    stem_kernel: 3
+    stem_stride: 1
+    use_maxpool: false
+    dropout_ratio: 0.1
+    fc_dim: 64
+    early_exits: []
+    weight_only_qat: true   # Enable weight-only QAT (fake quantization in training)
+    weight_only_bits: 2     # 2 or 4 bits; omit or set false for full precision
+```
+- Use `model_type: "resnet_simple"` for this backbone. Set `weight_only_qat: false` (or omit) for full precision; set `weight_only_qat: true` and `weight_only_bits: 2` or `4` for quantization-aware training. See [Quantization (Weight-Only QAT)](#quantization-weight-only-qat).
+
 **ConvOnly Model (pure convolutional):**
 ```yaml
 student_audio_convonly:
@@ -233,6 +255,7 @@ distillation:
 ```yaml
 only_audio_resnet18:
     models: ["student_audio_resnet"]  # Single model
+    checkpoints: []   # Train from scratch; use ["/path/to/ckpt.pth"] to finetune
     stages:
         - train_type: "vanilla_supervised"
           teacher_idx: 0
@@ -241,6 +264,8 @@ only_audio_resnet18:
     optimizer: {...}
     lr_scheduler: {...}
 ```
+
+**Checkpoints & finetuning:** Under each experiment you can set `checkpoints: [path1, path2, ...]` with one path per model in `models`. If a path is given, that checkpoint is loaded for that model at the start of training (e.g. to finetune or to start from a pretrained model). Use `checkpoints: []` or omit to train from scratch. In multi-stage runs, later stages automatically load the previous stage’s best checkpoint unless overridden by `checkpoints`. See [Checkpointing & Finetuning](#checkpointing--finetuning).
 
 **2. Vanilla Supervised with Early Exits:**
 

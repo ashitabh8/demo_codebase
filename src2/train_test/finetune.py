@@ -26,6 +26,7 @@ from dataset_utils.parse_args_utils import get_config
 from dataset_utils.MultiModalDataLoader import create_dataloaders
 from data_augmenter import create_augmenter, apply_augmentation
 from models.create_models import create_single_modal_model, get_total_memory
+from models.W8A8Quant import calibrate_w8a8, has_w8a8_layers, export_quantized_checkpoint
 from train_test.loss import get_loss_function
 from train_test.train_test_utils import (
     setup_experiment_dir,
@@ -148,6 +149,24 @@ def main():
         logging.info("  Peak activation (B=1): %.3f MB", _mem["activation_memory"])
         del _dummy, _mem
 
+        # W8A8 calibration: run before optimizer/loss setup so scales are
+        # locked in before the first QAT gradient update.
+        if has_w8a8_layers(model):
+            _device = torch.device(
+                f"cuda:{config.get('gpu', 0)}" if torch.cuda.is_available() else "cpu"
+            )
+            n_calib = int(training_config.get("w8a8_calib_batches", 50))
+            logging.info(
+                "\nRunning W8A8 activation calibration (%d batches)...", n_calib
+            )
+            calibrate_w8a8(
+                model, train_loader, _device,
+                n_batches=n_calib,
+                augmenter=augmenter,
+                apply_augmentation_fn=apply_augmentation,
+            )
+            logging.info("W8A8 calibration done — QAT fake-quant enabled.\n")
+
         logging.info("\nSetting up loss function...")
         loss_fn, _ = get_loss_function(training_config)
 
@@ -175,6 +194,12 @@ def main():
             model_name=model_name,
             training_config=training_config,
         )
+
+        if has_w8a8_layers(model) and best_checkpoint_path is not None:
+            quantized_path = str(Path(best_checkpoint_path).parent / "best_model_quantized.pth")
+            logging.info("\nExporting quantized checkpoint (int8 weights + scales)...")
+            export_quantized_checkpoint(model, best_checkpoint_path, quantized_path)
+            logging.info(f"Quantized checkpoint: {quantized_path}")
 
         config["models"][model_name]["checkpoint_path"] = best_checkpoint_path
         config["models"][model_name]["pretrained_checkpoint_path"] = (
