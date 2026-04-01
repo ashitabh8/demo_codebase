@@ -1,0 +1,6 @@
+[submodule "src2/train_test/Tiny-NN-in-C"]
+	path = src2/train_test/Tiny-NN-in-C
+	url = https://github.com/ashitabh8/Tiny-NN-in-C.git
+[submodule "Tiny-NN-in-C"]
+	path = Tiny-NN-in-C
+	url = https://github.com/ashitabh8/Tiny-NN-in-C.git
