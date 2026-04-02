@@ -17,10 +17,7 @@ from models.ResNetSimple import (
 )
 from models.DeepSenseLatest import SingleModalDeepSense
 from models.DeepSenseDepthwise import SingleModalDeepSenseDW
-from models.DeepSenseDWSimple import (
-    DeepSenseDWSimpleBackbone,
-    SingleModalDeepSenseDWSimple,
-)
+from models.DeepSenseDWSimple import DeepSenseDWSimpleBackbone
 
 
 def resolve_num_classes(config, model_cfg):
@@ -437,16 +434,19 @@ def create_deepsense_dw(config, model_config_key):
 
 def create_deepsense_dw_simple(config, model_config_key):
     """
-    Create a SingleModalDeepSenseDWSimple from YAML config.
+    Create DeepSenseDWSimpleBackbone from YAML config (tensor in / tensor out).
 
     Compiler-friendly variant: ReLU only, no Dropout, Conv2d-based temporal
-    layers (no Conv1d / BN1d), pure Tensor I/O, single execution path.
+    layers (no Conv1d / BN1d), single execution path. The dataloader still
+    provides nested dict batches; use simple_model_training in the train loop
+    (or unpack manually) to pass the active-modality tensor into this module.
+
     Supports the same per-model in_channels / in_spectrum_len overrides as
     create_deepsense_dw.
 
     Required keys under config["models"][model_config_key]:
         model_type:          "deepsense_dw_simple"
-        active_modality:     str
+        active_modality:     str (used by training to select the dict slice)
         channels_freq:       list[int]
         kernel_sizes_freq:   list[[int, int]]
         strides_freq:        list[[int, int]]
@@ -461,7 +461,7 @@ def create_deepsense_dw_simple(config, model_config_key):
     location_names = config["location_names"]
     if len(location_names) != 1:
         raise ValueError(
-            f"SingleModalDeepSenseDWSimple expects exactly one location, got {location_names}"
+            f"DeepSenseDWSimpleBackbone expects exactly one location, got {location_names}"
         )
     location_name = location_names[0]
 
@@ -487,7 +487,7 @@ def create_deepsense_dw_simple(config, model_config_key):
             f"equal length; got {len(channels_freq)}, {len(kernel_sizes_freq)}, {len(strides_freq)}"
         )
 
-    logging.info(f"Creating SingleModalDeepSenseDWSimple ({model_config_key})")
+    logging.info(f"Creating DeepSenseDWSimpleBackbone ({model_config_key})")
     logging.info(f"  modality={active_modality}, location={location_name}")
     logging.info(
         f"  in_channels={in_channels}, in_spectrum_len={in_spectrum_len}, "
@@ -496,7 +496,7 @@ def create_deepsense_dw_simple(config, model_config_key):
     logging.info(f"  channels_freq={channels_freq}")
     logging.info(f"  kernel_sizes_freq={kernel_sizes_freq}, strides_freq={strides_freq}")
 
-    backbone = DeepSenseDWSimpleBackbone(
+    model = DeepSenseDWSimpleBackbone(
         in_channels=in_channels,
         in_spectrum_len=in_spectrum_len,
         num_classes=num_classes,
@@ -507,12 +507,6 @@ def create_deepsense_dw_simple(config, model_config_key):
         num_temporal_layers=model_cfg["num_temporal_layers"],
         temporal_kernel=model_cfg["temporal_kernel"],
         fc_dim=model_cfg["fc_dim"],
-    )
-
-    model = SingleModalDeepSenseDWSimple(
-        location_name=location_name,
-        modality_name=active_modality,
-        backbone=backbone,
     )
 
     total_params = sum(p.numel() for p in model.parameters())
@@ -551,8 +545,8 @@ def get_activation_memory(model, input_dict, unit="MB"):
 
     Args:
         model: PyTorch model
-        input_dict: Input dict format: {'location': {'modality': tensor}}
-                   e.g., {'shake': {'audio': torch.randn(B, C, H, W)}}
+        input_dict: Either a dict {'location': {'modality': tensor}} or a single
+            input tensor (e.g. backbone-only models such as DeepSenseDWSimpleBackbone).
         unit: 'B', 'KB', or 'MB'
 
     Returns:
@@ -564,14 +558,18 @@ def get_activation_memory(model, input_dict, unit="MB"):
     model = model.to(device)
     model.eval()
 
-    # Get batch size from input
-    batch_size = None
-    for loc in input_dict:
-        for mod in input_dict[loc]:
-            batch_size = input_dict[loc][mod].shape[0]
-            break
-        if batch_size is not None:
-            break
+    if isinstance(input_dict, torch.Tensor):
+        batch_size = input_dict.shape[0]
+        forward_arg = input_dict
+    else:
+        forward_arg = input_dict
+        batch_size = None
+        for loc in input_dict:
+            for mod in input_dict[loc]:
+                batch_size = input_dict[loc][mod].shape[0]
+                break
+            if batch_size is not None:
+                break
 
     # Track the largest activation tensor
     peak_activation_bytes = 0
@@ -609,7 +607,7 @@ def get_activation_memory(model, input_dict, unit="MB"):
 
     # Run forward pass
     with torch.no_grad():
-        _ = model(input_dict)
+        _ = model(forward_arg)
 
     # Remove hooks
     for hook in hooks:
@@ -632,7 +630,7 @@ def get_total_memory(model, input_dict, unit="MB"):
 
     Args:
         model: PyTorch model
-        input_dict: Input dict format: {'location': {'modality': tensor}}
+        input_dict: Dict {'location': {'modality': tensor}} or a single forward tensor
         unit: 'B', 'KB', or 'MB'
 
     Returns:

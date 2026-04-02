@@ -118,6 +118,34 @@ def _log_single_modality_input_shape(model, data, logger, *, epoch: int, batch_i
     )
 
 
+def _logits_from_output(raw):
+    """Normalize model output to logits tensor (dict with 'logits' or raw tensor)."""
+    if isinstance(raw, dict):
+        return raw["logits"]
+    return raw
+
+
+def simple_training_forward(model, data, config, model_name):
+    """
+    Single-location batch dict -> tensor forward matching FX trace targets.
+
+    Uses config for location/modality keys (backbone-only models have no wrapper attrs).
+    If model.backbone exists (e.g. SingleModalResNet), runs backbone(x); else model(x).
+    """
+    if model_name is None:
+        raise ValueError("simple_model_training requires model_name for active_modality lookup")
+    if not isinstance(data, dict):
+        raise TypeError(
+            "simple_model_training expects batch data as dict[location][modality]"
+        )
+    location_name = config["location_names"][0]
+    modality_name = config["models"][model_name]["active_modality"]
+    x = data[location_name][modality_name]
+    if hasattr(model, "backbone"):
+        return model.backbone(x)
+    return model(x)
+
+
 def _get_process_peak_rss_kb() -> int:
     """
     Return peak resident-set-size (RSS) in KB for the current process.
@@ -897,7 +925,8 @@ def plot_confusion_matrix(cm, class_names=None, normalize=False):
 # Validation Function
 # ============================================================================
 
-def validate(model, val_loader, loss_fn, device, augmenter=None, apply_augmentation_fn=None, num_classes=None):
+def validate(model, val_loader, loss_fn, device, augmenter=None, apply_augmentation_fn=None, num_classes=None,
+             simple_model_training=False, model_name=None, config=None):
     """
     Default validation function.
     
@@ -908,6 +937,7 @@ def validate(model, val_loader, loss_fn, device, augmenter=None, apply_augmentat
         device: Device to run validation on
         augmenter: Data augmenter object (optional)
         apply_augmentation_fn: Function to apply augmentation (optional)
+        simple_model_training: If True, same tensor forward path as train() (requires config, model_name).
     
     Returns:
         val_results: Dictionary with validation metrics
@@ -916,6 +946,12 @@ def validate(model, val_loader, loss_fn, device, augmenter=None, apply_augmentat
             - 'predictions': list
             - 'labels': list
     """
+    if simple_model_training:
+        if config is None or model_name is None:
+            raise ValueError(
+                "validate(simple_model_training=True) requires config and model_name"
+            )
+
     model.eval()
     val_loss = 0.0
     val_correct = 0
@@ -946,14 +982,13 @@ def validate(model, val_loader, loss_fn, device, augmenter=None, apply_augmentat
                 data = data.to(device)
             
             # Forward pass
-            outputs = model(data)
-            
-            # Extract logits for metrics (handle dict outputs)
-            if isinstance(outputs, dict):
-                logits = outputs['logits']
+            if simple_model_training:
+                raw = simple_training_forward(model, data, config, model_name)
+                logits = _logits_from_output(raw)
             else:
-                logits = outputs
-            
+                outputs = model(data)
+                logits = _logits_from_output(outputs)
+
             try:
                 num_classes_from_outputs = int(logits.shape[1])
             except Exception:
@@ -965,7 +1000,7 @@ def validate(model, val_loader, loss_fn, device, augmenter=None, apply_augmentat
             else:
                 loss_labels = labels
             
-            loss = loss_fn(outputs, loss_labels)
+            loss = loss_fn(logits, loss_labels)
             
             val_loss += loss.item() * labels.size(0)
             predictions = torch.argmax(logits, dim=1)
@@ -1010,6 +1045,9 @@ def validate_multilabel(
     training_config,
     augmenter=None,
     apply_augmentation_fn=None,
+    simple_model_training=False,
+    model_name=None,
+    config=None,
 ):
     """
     Threshold-free validation for multi-label BCE targets [B, C] float in {0, 1}.
@@ -1025,6 +1063,12 @@ def validate_multilabel(
         loss, mAP, accuracy (0.0 placeholder), confusion_matrix (None),
         raw_probs [N,C], raw_labels [N,C]
     """
+    if simple_model_training:
+        if config is None or model_name is None:
+            raise ValueError(
+                "validate_multilabel(simple_model_training=True) requires config and model_name"
+            )
+
     model.eval()
     val_loss = 0.0
     val_total = 0
@@ -1049,13 +1093,14 @@ def validate_multilabel(
             else:
                 data = data.to(device)
 
-            outputs = model(data)
-            if isinstance(outputs, dict):
-                logits = outputs["logits"]
+            if simple_model_training:
+                raw = simple_training_forward(model, data, config, model_name)
+                logits = _logits_from_output(raw)
             else:
-                logits = outputs
+                outputs = model(data)
+                logits = _logits_from_output(outputs)
 
-            loss = loss_fn(outputs, labels)
+            loss = loss_fn(logits, labels)
             val_loss += loss.item() * labels.size(0)
             val_total += labels.size(0)
 
@@ -1511,7 +1556,7 @@ def validate_vanilla_supervised_contrastive(
 def train(model, train_loader, val_loader, config, experiment_dir,
           loss_fn, optimizer, scheduler, num_epochs,
           val_fn=None, augmenter=None, apply_augmentation_fn=None,
-          model_name=None, training_config=None):
+          model_name=None, training_config=None, simple_model_training=False):
     """
     Train the model with comprehensive logging and checkpointing.
     
@@ -1530,7 +1575,9 @@ def train(model, train_loader, val_loader, config, experiment_dir,
         apply_augmentation_fn: Function to apply augmentation (optional)
         training_config: Experiment training_configs entry; required fields for
             bce_multilabel (loss_name, multilabel_best_metric)
-    
+        simple_model_training: If True, unpack dict batch via config + model_name,
+            forward tensor through model.backbone or model, apply loss on logits only.
+
     Returns:
         model: Trained model
         train_history: Dictionary with training history
@@ -1551,6 +1598,9 @@ def train(model, train_loader, val_loader, config, experiment_dir,
         raise ValueError(
             "bce_multilabel training does not support a custom val_fn; use val_fn=None"
         )
+
+    if simple_model_training and model_name is None:
+        raise ValueError("simple_model_training requires model_name")
 
     # ---------------------------------------------------------------------
     # Peak RAM tracking (CPU RSS + optional CUDA peak)
@@ -1627,6 +1677,11 @@ def train(model, train_loader, val_loader, config, experiment_dir,
     if multilabel:
         logger.info(f"Multilabel BCE: best_metric={ml_best_metric}")
     logger.info(f"Experiment directory: {experiment_dir}")
+    if simple_model_training:
+        logger.info(
+            "simple_model_training: unpack dict in loop; forward tensor via "
+            "model.backbone(x) or model(x); loss on logits tensor only"
+        )
     logger.info("=" * 80)
     
     for epoch in range(num_epochs):
@@ -1670,16 +1725,21 @@ def train(model, train_loader, val_loader, config, experiment_dir,
             
             # Forward pass
             optimizer.zero_grad()
-            outputs = model(data)
-            
+            if simple_model_training:
+                raw = simple_training_forward(model, data, config, model_name)
+                logits = _logits_from_output(raw)
+            else:
+                outputs = model(data)
+                logits = _logits_from_output(outputs)
+
             if multilabel:
                 loss_labels = labels.float()
             elif len(labels.shape) == 2 and labels.shape[1] > 1:
                 loss_labels = torch.argmax(labels, dim=1)
             else:
                 loss_labels = labels
-            
-            loss = loss_fn(outputs, loss_labels)
+
+            loss = loss_fn(logits, loss_labels)
 
             # Backward pass
             loss.backward()
@@ -1699,11 +1759,6 @@ def train(model, train_loader, val_loader, config, experiment_dir,
             
             # Metrics
             train_loss += loss.item() * labels.size(0)
-            
-            if isinstance(outputs, dict):
-                logits = outputs['logits']
-            else:
-                logits = outputs
             if not multilabel:
                 predictions = torch.argmax(logits, dim=1)
                 if len(labels.shape) == 2 and labels.shape[1] > 1:
@@ -1736,9 +1791,22 @@ def train(model, train_loader, val_loader, config, experiment_dir,
                 training_config,
                 augmenter,
                 apply_augmentation_fn,
+                simple_model_training=simple_model_training,
+                model_name=model_name,
+                config=config,
             )
         else:
-            val_results = validate(model, val_loader, loss_fn, device, augmenter, apply_augmentation_fn)
+            val_results = validate(
+                model,
+                val_loader,
+                loss_fn,
+                device,
+                augmenter,
+                apply_augmentation_fn,
+                simple_model_training=simple_model_training,
+                model_name=model_name,
+                config=config,
+            )
         
         epoch_val_loss = val_results['loss']
         epoch_val_acc = val_results['accuracy']
@@ -1908,8 +1976,16 @@ def train(model, train_loader, val_loader, config, experiment_dir,
         )
         model.load_state_dict(best_ckpt["model_state_dict"])
         final_val = validate_multilabel(
-            model, val_loader, loss_fn, device, training_config,
-            augmenter, apply_augmentation_fn,
+            model,
+            val_loader,
+            loss_fn,
+            device,
+            training_config,
+            augmenter,
+            apply_augmentation_fn,
+            simple_model_training=simple_model_training,
+            model_name=model_name,
+            config=config,
         )
         threshold_results = find_optimal_per_class_thresholds(
             final_val["raw_labels"],

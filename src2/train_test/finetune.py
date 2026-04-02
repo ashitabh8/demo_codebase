@@ -139,7 +139,10 @@ def main():
             else config["loc_mod_spectrum_len"][_location][_modality]
         )
         _dummy = {_location: {_modality: torch.randn(1, _in_ch, _n_segs, _spec_len)}}
-        _mem = get_total_memory(model, _dummy, unit="MB")
+        if _model_cfg["model_type"] == "deepsense_dw_simple":
+            _mem = get_total_memory(model, _dummy[_location][_modality], unit="MB")
+        else:
+            _mem = get_total_memory(model, _dummy, unit="MB")
         logging.info("Memory profile (float32 / INT8 weight-only estimate):")
         logging.info(
             "  Parameters : %.2f MB  (INT8 ≈ %.2f MB)",

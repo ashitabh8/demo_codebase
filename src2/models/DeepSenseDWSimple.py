@@ -19,7 +19,6 @@ Classes
 DSDWConvLayerSimple     : depthwise Conv2d + pointwise Conv2d + BN2d + ReLU
 DSTemporalDWLayerSimple : depthwise Conv2d (k,1) + pointwise Conv2d + BN2d + ReLU
 DeepSenseDWSimpleBackbone : freq stack → spectrum proj → temporal stack → FC head
-SingleModalDeepSenseDWSimple : thin dict-unpacking wrapper (mirrors SingleModalSimpleResNet)
 """
 import torch
 import torch.nn as nn
@@ -242,29 +241,3 @@ class DeepSenseDWSimpleBackbone(nn.Module):
         x = self.fc1_relu(self.fc1(x))  # [B, fc_dim]
         x = self.fc2(x)          # [B, num_classes]
         return x
-
-
-# ---------------------------------------------------------------------------
-# Single-modality wrapper
-# ---------------------------------------------------------------------------
-
-class SingleModalDeepSenseDWSimple(nn.Module):
-    """
-    Thin wrapper around DeepSenseDWSimpleBackbone — mirrors SingleModalSimpleResNet.
-
-    Unpacks inputs[location_name][modality_name] and forwards the tensor
-    to the backbone. The compiler only sees the backbone.
-
-    Input:  inputs[location_name][modality_name] = [B, C, intervals, spectrum]
-    Output: [B, num_classes]
-    """
-
-    def __init__(self, location_name: str, modality_name: str, backbone: nn.Module):
-        super().__init__()
-        self.location_name = location_name
-        self.modality_name = modality_name
-        self.backbone = backbone
-
-    def forward(self, inputs: dict) -> torch.Tensor:
-        x = inputs[self.location_name][self.modality_name]
-        return self.backbone(x)
