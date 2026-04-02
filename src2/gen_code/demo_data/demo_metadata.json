@@ -1,0 +1,34 @@
+{
+  "yaml_path": "src2/data/Parkland.yaml",
+  "experiment_name": "only_audio_deepsense_dw_large_mel",
+  "task_name": "vehicle_classification",
+  "dataloader_key": "parkland_legacy_multiclass",
+  "split": "test",
+  "seed": 1234,
+  "num_selected": 50,
+  "requested_num_samples": 50,
+  "location": "shake",
+  "modality": "audio",
+  "class_names": [
+    "Polaris",
+    "Warhog",
+    "Truck"
+  ],
+  "selected_class_counts": {
+    "Polaris": 17,
+    "Warhog": 17,
+    "Truck": 16
+  },
+  "available_class_counts": {
+    "0": 291,
+    "1": 153,
+    "2": 207
+  },
+  "feature_shape_per_sample": [
+    1,
+    10,
+    80
+  ],
+  "feature_size_flat": 800,
+  "flatten_order": "row-major over [channels, segments, mel_bins]"
+}
