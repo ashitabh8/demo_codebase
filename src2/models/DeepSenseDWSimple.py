@@ -22,6 +22,7 @@ DeepSenseDWSimpleBackbone : freq stack → spectrum proj → temporal stack → 
 """
 import torch
 import torch.nn as nn
+from models.QuantBase import QuantDWConv2d
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +120,54 @@ class DSTemporalDWLayerSimple(nn.Module):
         x = x.unsqueeze(-1)                            # [B, C, I, 1]
         x = self.act(self.bn(self.pointwise(self.depthwise(x))))  # [B, C, I, 1]
         return x.squeeze(-1)                            # [B, C, I]
+
+
+class QuantDSDWConvLayerSimple(QuantDWConv2d):
+    """
+    W8A8/W8A16 quantized counterpart of DSDWConvLayerSimple.
+
+    Uses QuantDWConv2d fake-quantized conv path while keeping the simple model's
+    activation semantics (ReLU, no dropout) so compiled float and quantized
+    training variants stay architecturally aligned.
+    """
+
+    def __init__(self, in_channels, out_channels, kernel_size, stride, act_bits=8):
+        super().__init__(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            dropout_ratio=0.0,
+            act_bits=act_bits,
+        )
+        self.act = nn.ReLU()
+        self.drop = nn.Identity()
+
+
+class QuantDSTemporalDWLayerSimple(QuantDWConv2d):
+    """
+    Quantized temporal depthwise-separable layer using Conv2d(k,1).
+
+    Input [B, C, I] is reshaped to [B, C, I, 1], routed through a quantized
+    QuantDWConv2d block, then reshaped back to [B, C, I].
+    """
+
+    def __init__(self, channels, kernel_size=3, act_bits=8):
+        super().__init__(
+            in_channels=channels,
+            out_channels=channels,
+            kernel_size=(kernel_size, 1),
+            stride=(1, 1),
+            dropout_ratio=0.0,
+            act_bits=act_bits,
+        )
+        self.act = nn.ReLU()
+        self.drop = nn.Identity()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.unsqueeze(-1)
+        x = super().forward(x)
+        return x.squeeze(-1)
 
 
 # ---------------------------------------------------------------------------
@@ -240,4 +289,77 @@ class DeepSenseDWSimpleBackbone(nn.Module):
         x = x.mean(dim=-1)       # [B, temporal_channels]
         x = self.fc1_relu(self.fc1(x))  # [B, fc_dim]
         x = self.fc2(x)          # [B, num_classes]
+        return x
+
+
+class DeepSenseDWSimpleW8A8Backbone(nn.Module):
+    """
+    Quantized (QAT) variant of DeepSenseDWSimpleBackbone.
+
+    It preserves the same macro architecture as the float simple backbone, but
+    replaces depthwise-separable conv blocks with quantized counterparts.
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        in_spectrum_len: int,
+        num_classes: int,
+        channels_freq,
+        kernel_sizes_freq,
+        strides_freq,
+        temporal_channels: int,
+        num_temporal_layers: int,
+        temporal_kernel: int,
+        fc_dim: int,
+        act_bits: int = 8,
+    ):
+        super().__init__()
+
+        if not (len(channels_freq) == len(kernel_sizes_freq) == len(strides_freq)):
+            raise ValueError(
+                f"channels_freq, kernel_sizes_freq, strides_freq must have equal length; "
+                f"got {len(channels_freq)}, {len(kernel_sizes_freq)}, {len(strides_freq)}"
+            )
+        if num_temporal_layers < 1:
+            raise ValueError(f"num_temporal_layers must be >= 1, got {num_temporal_layers}")
+
+        freq_layers = []
+        in_ch = in_channels
+        for out_ch, k, s in zip(channels_freq, kernel_sizes_freq, strides_freq):
+            freq_layers.append(
+                QuantDSDWConvLayerSimple(in_ch, out_ch, k, s, act_bits=act_bits)
+            )
+            in_ch = out_ch
+        self.freq_stack = nn.ModuleList(freq_layers)
+
+        freq_out = _compute_freq_out_dw(in_spectrum_len, kernel_sizes_freq, strides_freq)
+        self.spectrum_proj = nn.Linear(channels_freq[-1] * freq_out, temporal_channels)
+
+        self.temporal_stack = nn.ModuleList([
+            QuantDSTemporalDWLayerSimple(
+                temporal_channels, temporal_kernel, act_bits=act_bits
+            )
+            for _ in range(num_temporal_layers)
+        ])
+
+        self.fc1 = nn.Linear(temporal_channels, fc_dim)
+        self.fc1_relu = nn.ReLU()
+        self.fc2 = nn.Linear(fc_dim, num_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        for layer in self.freq_stack:
+            x = layer(x)
+
+        bsz, channels, intervals, freq = x.shape
+        x = x.permute(0, 2, 1, 3).reshape(bsz, intervals, channels * freq)
+        x = self.spectrum_proj(x)
+        x = x.permute(0, 2, 1)
+
+        for layer in self.temporal_stack:
+            x = layer(x)
+
+        x = x.mean(dim=-1)
+        x = self.fc1_relu(self.fc1(x))
+        x = self.fc2(x)
         return x

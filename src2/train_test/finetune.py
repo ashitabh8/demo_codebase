@@ -82,13 +82,17 @@ def main():
 
     apply_class_subset(config)
 
+    simple_model_training = False
+    if "simple_model_training" in experiment_config:
+        simple_model_training = bool(experiment_config["simple_model_training"])
+
     train_loader, val_loader, test_loader = create_dataloaders(config=config)
 
-    # logging.info("\nSetting up normalization...")
-    # train_loader, val_loader, test_loader = setup_normalization(
-    #     train_loader, val_loader, test_loader, config
-    # )
-    # logging.info("Normalization setup complete")
+    logging.info("\nSetting up normalization...")
+    train_loader, val_loader, test_loader = setup_normalization(
+        train_loader, val_loader, test_loader, config
+    )
+    logging.info("Normalization setup complete")
 
     logging.info("\nCreating augmenter...")
     augmenter = create_augmenter(
@@ -162,8 +166,28 @@ def main():
             logging.info(
                 "\nRunning W8A8 activation calibration (%d batches)...", n_calib
             )
+            calibrate_model = model
+            if simple_model_training:
+                _location_name = config["location_names"][0]
+                _modality_name = config["models"][model_name]["active_modality"]
+
+                class _SimpleInputWrapper(torch.nn.Module):
+                    def __init__(self, base_model, location_name, modality_name):
+                        super().__init__()
+                        self.base_model = base_model
+                        self.location_name = location_name
+                        self.modality_name = modality_name
+
+                    def forward(self, inputs):
+                        return self.base_model(
+                            inputs[self.location_name][self.modality_name]
+                        )
+
+                calibrate_model = _SimpleInputWrapper(
+                    model, _location_name, _modality_name
+                )
             calibrate_w8a8(
-                model, train_loader, _device,
+                calibrate_model, train_loader, _device,
                 n_batches=n_calib,
                 augmenter=augmenter,
                 apply_augmentation_fn=apply_augmentation,
@@ -181,21 +205,27 @@ def main():
         logging.info(
             f"\nStarting supervised fine-tuning with loss function: {training_config['loss_name']}..."
         )
+        train_kwargs = {
+            "model": model,
+            "train_loader": train_loader,
+            "val_loader": val_loader,
+            "config": config,
+            "experiment_dir": experiment_dir,
+            "loss_fn": loss_fn,
+            "val_fn": None,
+            "augmenter": augmenter,
+            "apply_augmentation_fn": apply_augmentation,
+            "optimizer": optimizer,
+            "scheduler": scheduler,
+            "num_epochs": num_epochs,
+            "model_name": model_name,
+            "training_config": training_config,
+        }
+        if selected_train_fn is train:
+            train_kwargs["simple_model_training"] = simple_model_training
+
         model, _, best_checkpoint_path = selected_train_fn(
-            model=model,
-            train_loader=train_loader,
-            val_loader=val_loader,
-            config=config,
-            experiment_dir=experiment_dir,
-            loss_fn=loss_fn,
-            val_fn=None,
-            augmenter=augmenter,
-            apply_augmentation_fn=apply_augmentation,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            num_epochs=num_epochs,
-            model_name=model_name,
-            training_config=training_config,
+            **train_kwargs
         )
 
         if has_w8a8_layers(model) and best_checkpoint_path is not None:

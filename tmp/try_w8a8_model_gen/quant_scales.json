@@ -1,0 +1,156 @@
+[
+  {
+    "node_name": "freq_stack_0_depthwise",
+    "weight_name": "freq_stack_0_depthwise_weight",
+    "input_scale": 1.0411688089370728,
+    "output_scale": 0.25593554879736713,
+    "input_scale_source": "trained_act_scale",
+    "rule_type": "QATStaticDepthwiseConvRule",
+    "weight_scale_min": 0.0019423202611505985,
+    "weight_scale_max": 0.003190132323652506,
+    "weight_scale_len": 6
+  },
+  {
+    "node_name": "freq_stack_0_pointwise",
+    "weight_name": "freq_stack_0_pointwise_weight",
+    "input_scale": 0.25593554879736713,
+    "output_scale": 0.1404188711812177,
+    "input_scale_source": "depthwise_output_scale",
+    "rule_type": "QATStaticPointwiseConvRule",
+    "weight_scale_min": 0.0012563889613375068,
+    "weight_scale_max": 0.0035278538707643747,
+    "weight_scale_len": 32
+  },
+  {
+    "node_name": "freq_stack_1_depthwise",
+    "weight_name": "freq_stack_1_depthwise_weight",
+    "input_scale": 0.5515544414520264,
+    "output_scale": 0.20132964427076924,
+    "input_scale_source": "trained_act_scale",
+    "rule_type": "QATStaticDepthwiseConvRule",
+    "weight_scale_min": 0.0013347432250156999,
+    "weight_scale_max": 0.003819802077487111,
+    "weight_scale_len": 32
+  },
+  {
+    "node_name": "freq_stack_1_pointwise",
+    "weight_name": "freq_stack_1_pointwise_weight",
+    "input_scale": 0.20132964427076924,
+    "output_scale": 0.06676716691865696,
+    "input_scale_source": "depthwise_output_scale",
+    "rule_type": "QATStaticPointwiseConvRule",
+    "weight_scale_min": 0.0010000485926866531,
+    "weight_scale_max": 0.0023740287870168686,
+    "weight_scale_len": 64
+  },
+  {
+    "node_name": "freq_stack_2_depthwise",
+    "weight_name": "freq_stack_2_depthwise_weight",
+    "input_scale": 0.2629817724227905,
+    "output_scale": 0.15339854383093166,
+    "input_scale_source": "trained_act_scale",
+    "rule_type": "QATStaticDepthwiseConvRule",
+    "weight_scale_min": 0.001113805454224348,
+    "weight_scale_max": 0.00458966800943017,
+    "weight_scale_len": 64
+  },
+  {
+    "node_name": "freq_stack_2_pointwise",
+    "weight_name": "freq_stack_2_pointwise_weight",
+    "input_scale": 0.15339854383093166,
+    "output_scale": 0.04483217329490842,
+    "input_scale_source": "depthwise_output_scale",
+    "rule_type": "QATStaticPointwiseConvRule",
+    "weight_scale_min": 0.0008780998177826405,
+    "weight_scale_max": 0.001715954509563744,
+    "weight_scale_len": 96
+  },
+  {
+    "node_name": "temporal_stack_0_depthwise",
+    "weight_name": "temporal_stack_0_depthwise_weight",
+    "input_scale": 0.04614469036459923,
+    "output_scale": 0.026147465067585623,
+    "input_scale_source": "trained_act_scale",
+    "rule_type": "QATStaticDepthwiseConvRule",
+    "weight_scale_min": 0.0008817151538096368,
+    "weight_scale_max": 0.003848761785775423,
+    "weight_scale_len": 64
+  },
+  {
+    "node_name": "temporal_stack_0_pointwise",
+    "weight_name": "temporal_stack_0_pointwise_weight",
+    "input_scale": 0.026147465067585623,
+    "output_scale": 0.014428725392799678,
+    "input_scale_source": "depthwise_output_scale",
+    "rule_type": "QATStaticPointwiseConvRule",
+    "weight_scale_min": 0.0009032263769768178,
+    "weight_scale_max": 0.0013008626410737634,
+    "weight_scale_len": 64
+  },
+  {
+    "node_name": "temporal_stack_1_depthwise",
+    "weight_name": "temporal_stack_1_depthwise_weight",
+    "input_scale": 0.12132112681865692,
+    "output_scale": 0.03938698956346887,
+    "input_scale_source": "trained_act_scale",
+    "rule_type": "QATStaticDepthwiseConvRule",
+    "weight_scale_min": 0.0012964439811185002,
+    "weight_scale_max": 0.0037414710968732834,
+    "weight_scale_len": 64
+  },
+  {
+    "node_name": "temporal_stack_1_pointwise",
+    "weight_name": "temporal_stack_1_pointwise_weight",
+    "input_scale": 0.03938698956346887,
+    "output_scale": 0.015214013302420068,
+    "input_scale_source": "depthwise_output_scale",
+    "rule_type": "QATStaticPointwiseConvRule",
+    "weight_scale_min": 0.0009059183648787439,
+    "weight_scale_max": 0.0017640858422964811,
+    "weight_scale_len": 64
+  },
+  {
+    "node_name": "temporal_stack_2_depthwise",
+    "weight_name": "temporal_stack_2_depthwise_weight",
+    "input_scale": 0.07961777597665787,
+    "output_scale": 0.032976372035469596,
+    "input_scale_source": "trained_act_scale",
+    "rule_type": "QATStaticDepthwiseConvRule",
+    "weight_scale_min": 0.0009089307277463377,
+    "weight_scale_max": 0.0041579739190638065,
+    "weight_scale_len": 64
+  },
+  {
+    "node_name": "temporal_stack_2_pointwise",
+    "weight_name": "temporal_stack_2_pointwise_weight",
+    "input_scale": 0.032976372035469596,
+    "output_scale": 0.013856765792125792,
+    "input_scale_source": "depthwise_output_scale",
+    "rule_type": "QATStaticPointwiseConvRule",
+    "weight_scale_min": 0.0008142683655023575,
+    "weight_scale_max": 0.001655875938013196,
+    "weight_scale_len": 64
+  },
+  {
+    "node_name": "temporal_stack_3_depthwise",
+    "weight_name": "temporal_stack_3_depthwise_weight",
+    "input_scale": 0.06685340404510498,
+    "output_scale": 0.024946270965215726,
+    "input_scale_source": "trained_act_scale",
+    "rule_type": "QATStaticDepthwiseConvRule",
+    "weight_scale_min": 0.0014097107341513038,
+    "weight_scale_max": 0.004208699334412813,
+    "weight_scale_len": 64
+  },
+  {
+    "node_name": "temporal_stack_3_pointwise",
+    "weight_name": "temporal_stack_3_pointwise_weight",
+    "input_scale": 0.024946270965215726,
+    "output_scale": 0.008628187217111663,
+    "input_scale_source": "depthwise_output_scale",
+    "rule_type": "QATStaticPointwiseConvRule",
+    "weight_scale_min": 0.0009413223597221076,
+    "weight_scale_max": 0.0016048868419602513,
+    "weight_scale_len": 64
+  }
+]

@@ -1,0 +1,308 @@
+{
+  "checkpoint": "/home/misra8/demo_codebase/src2/experiments/20260403_014939_finetune_finetune_audio_deepsense_dw_simple_tiny_w8a8/models/best_model.pth",
+  "compile_scales": "/home/misra8/demo_codebase/tmp/try_w8a8_model_gen/quant_scales.json",
+  "files": {
+    "trained_scales_export": "/home/misra8/demo_codebase/tmp/try_w8a8_model_gen/trained_scales_export.json",
+    "comparison_report": "/home/misra8/demo_codebase/tmp/try_w8a8_model_gen/scale_comparison_report.json"
+  },
+  "depthwise_input_vs_act_scale": [
+    {
+      "node": "freq_stack_0_depthwise",
+      "layer": "freq_stack.0",
+      "trained_act_scale": 1.0411688089370728,
+      "compiler_input_scale": 1.0328274223748155,
+      "abs_diff": 0.008341386562257247,
+      "rel_diff_pct": 0.8011560172238499
+    },
+    {
+      "node": "freq_stack_1_depthwise",
+      "layer": "freq_stack.1",
+      "trained_act_scale": 0.5515544414520264,
+      "compiler_input_scale": 0.3485843328040416,
+      "abs_diff": 0.20297010864798476,
+      "rel_diff_pct": 36.7996508402043
+    },
+    {
+      "node": "freq_stack_2_depthwise",
+      "layer": "freq_stack.2",
+      "trained_act_scale": 0.2629817724227905,
+      "compiler_input_scale": 0.19073788199837752,
+      "abs_diff": 0.07224389042441301,
+      "rel_diff_pct": 27.471063777100092
+    },
+    {
+      "node": "temporal_stack_0_depthwise",
+      "layer": "temporal_stack.0",
+      "trained_act_scale": 0.04614469036459923,
+      "compiler_input_scale": 0.039045251260592245,
+      "abs_diff": 0.007099439104006983,
+      "rel_diff_pct": 15.385170098472372
+    },
+    {
+      "node": "temporal_stack_1_depthwise",
+      "layer": "temporal_stack.1",
+      "trained_act_scale": 0.12132112681865692,
+      "compiler_input_scale": 0.08897414169912263,
+      "abs_diff": 0.032346985119534294,
+      "rel_diff_pct": 26.662285430207472
+    },
+    {
+      "node": "temporal_stack_2_depthwise",
+      "layer": "temporal_stack.2",
+      "trained_act_scale": 0.07961777597665787,
+      "compiler_input_scale": 0.08201198127326065,
+      "abs_diff": 0.0023942052966027805,
+      "rel_diff_pct": 3.007124058959782
+    },
+    {
+      "node": "temporal_stack_3_depthwise",
+      "layer": "temporal_stack.3",
+      "trained_act_scale": 0.06685340404510498,
+      "compiler_input_scale": 0.08339918692280927,
+      "abs_diff": 0.016545782877704293,
+      "rel_diff_pct": 24.74934988582048
+    }
+  ],
+  "weight_scale_consistency": [
+    {
+      "node": "freq_stack_0_depthwise",
+      "layer": "freq_stack.0",
+      "op": "depthwise",
+      "compiler_min": 0.0019423202611505985,
+      "compiler_max": 0.003190132323652506,
+      "trained_min": 0.0019423202611505985,
+      "trained_max": 0.003190132323652506,
+      "min_abs_diff": 0.0,
+      "max_abs_diff": 0.0,
+      "len_compiler": 6,
+      "len_trained": 6
+    },
+    {
+      "node": "freq_stack_0_pointwise",
+      "layer": "freq_stack.0",
+      "op": "pointwise",
+      "compiler_min": 0.0012563889613375068,
+      "compiler_max": 0.0035278538707643747,
+      "trained_min": 0.0012563889613375068,
+      "trained_max": 0.0035278538707643747,
+      "min_abs_diff": 0.0,
+      "max_abs_diff": 0.0,
+      "len_compiler": 32,
+      "len_trained": 32
+    },
+    {
+      "node": "freq_stack_1_depthwise",
+      "layer": "freq_stack.1",
+      "op": "depthwise",
+      "compiler_min": 0.0013347432250156999,
+      "compiler_max": 0.003819802077487111,
+      "trained_min": 0.0013347432250156999,
+      "trained_max": 0.003819802077487111,
+      "min_abs_diff": 0.0,
+      "max_abs_diff": 0.0,
+      "len_compiler": 32,
+      "len_trained": 32
+    },
+    {
+      "node": "freq_stack_1_pointwise",
+      "layer": "freq_stack.1",
+      "op": "pointwise",
+      "compiler_min": 0.0010000485926866531,
+      "compiler_max": 0.0023740287870168686,
+      "trained_min": 0.0010000485926866531,
+      "trained_max": 0.0023740287870168686,
+      "min_abs_diff": 0.0,
+      "max_abs_diff": 0.0,
+      "len_compiler": 64,
+      "len_trained": 64
+    },
+    {
+      "node": "freq_stack_2_depthwise",
+      "layer": "freq_stack.2",
+      "op": "depthwise",
+      "compiler_min": 0.001113805454224348,
+      "compiler_max": 0.00458966800943017,
+      "trained_min": 0.001113805454224348,
+      "trained_max": 0.00458966800943017,
+      "min_abs_diff": 0.0,
+      "max_abs_diff": 0.0,
+      "len_compiler": 64,
+      "len_trained": 64
+    },
+    {
+      "node": "freq_stack_2_pointwise",
+      "layer": "freq_stack.2",
+      "op": "pointwise",
+      "compiler_min": 0.0008780998177826405,
+      "compiler_max": 0.001715954509563744,
+      "trained_min": 0.0008780998177826405,
+      "trained_max": 0.001715954509563744,
+      "min_abs_diff": 0.0,
+      "max_abs_diff": 0.0,
+      "len_compiler": 96,
+      "len_trained": 96
+    },
+    {
+      "node": "temporal_stack_0_depthwise",
+      "layer": "temporal_stack.0",
+      "op": "depthwise",
+      "compiler_min": 0.0008817151538096368,
+      "compiler_max": 0.003848761785775423,
+      "trained_min": 0.0008817151538096368,
+      "trained_max": 0.003848761785775423,
+      "min_abs_diff": 0.0,
+      "max_abs_diff": 0.0,
+      "len_compiler": 64,
+      "len_trained": 64
+    },
+    {
+      "node": "temporal_stack_0_pointwise",
+      "layer": "temporal_stack.0",
+      "op": "pointwise",
+      "compiler_min": 0.0009032263769768178,
+      "compiler_max": 0.0013008626410737634,
+      "trained_min": 0.0009032263769768178,
+      "trained_max": 0.0013008626410737634,
+      "min_abs_diff": 0.0,
+      "max_abs_diff": 0.0,
+      "len_compiler": 64,
+      "len_trained": 64
+    },
+    {
+      "node": "temporal_stack_1_depthwise",
+      "layer": "temporal_stack.1",
+      "op": "depthwise",
+      "compiler_min": 0.0012964439811185002,
+      "compiler_max": 0.0037414710968732834,
+      "trained_min": 0.0012964439811185002,
+      "trained_max": 0.0037414710968732834,
+      "min_abs_diff": 0.0,
+      "max_abs_diff": 0.0,
+      "len_compiler": 64,
+      "len_trained": 64
+    },
+    {
+      "node": "temporal_stack_1_pointwise",
+      "layer": "temporal_stack.1",
+      "op": "pointwise",
+      "compiler_min": 0.0009059183648787439,
+      "compiler_max": 0.0017640858422964811,
+      "trained_min": 0.0009059183648787439,
+      "trained_max": 0.0017640858422964811,
+      "min_abs_diff": 0.0,
+      "max_abs_diff": 0.0,
+      "len_compiler": 64,
+      "len_trained": 64
+    },
+    {
+      "node": "temporal_stack_2_depthwise",
+      "layer": "temporal_stack.2",
+      "op": "depthwise",
+      "compiler_min": 0.0009089307277463377,
+      "compiler_max": 0.0041579739190638065,
+      "trained_min": 0.0009089307277463377,
+      "trained_max": 0.0041579739190638065,
+      "min_abs_diff": 0.0,
+      "max_abs_diff": 0.0,
+      "len_compiler": 64,
+      "len_trained": 64
+    },
+    {
+      "node": "temporal_stack_2_pointwise",
+      "layer": "temporal_stack.2",
+      "op": "pointwise",
+      "compiler_min": 0.0008142683655023575,
+      "compiler_max": 0.001655875938013196,
+      "trained_min": 0.0008142683655023575,
+      "trained_max": 0.001655875938013196,
+      "min_abs_diff": 0.0,
+      "max_abs_diff": 0.0,
+      "len_compiler": 64,
+      "len_trained": 64
+    },
+    {
+      "node": "temporal_stack_3_depthwise",
+      "layer": "temporal_stack.3",
+      "op": "depthwise",
+      "compiler_min": 0.0014097107341513038,
+      "compiler_max": 0.004208699334412813,
+      "trained_min": 0.0014097107341513038,
+      "trained_max": 0.004208699334412813,
+      "min_abs_diff": 0.0,
+      "max_abs_diff": 0.0,
+      "len_compiler": 64,
+      "len_trained": 64
+    },
+    {
+      "node": "temporal_stack_3_pointwise",
+      "layer": "temporal_stack.3",
+      "op": "pointwise",
+      "compiler_min": 0.0009413223597221076,
+      "compiler_max": 0.0016048868419602513,
+      "trained_min": 0.0009413223597221076,
+      "trained_max": 0.0016048868419602513,
+      "min_abs_diff": 0.0,
+      "max_abs_diff": 0.0,
+      "len_compiler": 64,
+      "len_trained": 64
+    }
+  ],
+  "pointwise_input_scale_source": [
+    {
+      "layer": "freq_stack.0",
+      "pointwise_node": "freq_stack_0_pointwise",
+      "pointwise_input_scale": 0.2482103512981745,
+      "depthwise_output_scale": 0.2482103512981745,
+      "matches_depthwise_output": true,
+      "matches_trained_act_scale": false
+    },
+    {
+      "layer": "freq_stack.1",
+      "pointwise_node": "freq_stack_1_pointwise",
+      "pointwise_input_scale": 0.11439804767999123,
+      "depthwise_output_scale": 0.11439804767999123,
+      "matches_depthwise_output": true,
+      "matches_trained_act_scale": false
+    },
+    {
+      "layer": "freq_stack.2",
+      "pointwise_node": "freq_stack_2_pointwise",
+      "pointwise_input_scale": 0.09440098409577617,
+      "depthwise_output_scale": 0.09440098409577617,
+      "matches_depthwise_output": true,
+      "matches_trained_act_scale": false
+    },
+    {
+      "layer": "temporal_stack.0",
+      "pointwise_node": "temporal_stack_0_pointwise",
+      "pointwise_input_scale": 0.01970025122635008,
+      "depthwise_output_scale": 0.01970025122635008,
+      "matches_depthwise_output": true,
+      "matches_trained_act_scale": false
+    },
+    {
+      "layer": "temporal_stack.1",
+      "pointwise_node": "temporal_stack_1_pointwise",
+      "pointwise_input_scale": 0.027595204631174642,
+      "depthwise_output_scale": 0.027595204631174642,
+      "matches_depthwise_output": true,
+      "matches_trained_act_scale": false
+    },
+    {
+      "layer": "temporal_stack.2",
+      "pointwise_node": "temporal_stack_2_pointwise",
+      "pointwise_input_scale": 0.03712012073186439,
+      "depthwise_output_scale": 0.03712012073186439,
+      "matches_depthwise_output": true,
+      "matches_trained_act_scale": false
+    },
+    {
+      "layer": "temporal_stack.3",
+      "pointwise_node": "temporal_stack_3_pointwise",
+      "pointwise_input_scale": 0.029488674298984798,
+      "depthwise_output_scale": 0.029488674298984798,
+      "matches_depthwise_output": true,
+      "matches_trained_act_scale": false
+    }
+  ]
+}

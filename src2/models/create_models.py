@@ -17,7 +17,10 @@ from models.ResNetSimple import (
 )
 from models.DeepSenseLatest import SingleModalDeepSense
 from models.DeepSenseDepthwise import SingleModalDeepSenseDW
-from models.DeepSenseDWSimple import DeepSenseDWSimpleBackbone
+from models.DeepSenseDWSimple import (
+    DeepSenseDWSimpleBackbone,
+    DeepSenseDWSimpleW8A8Backbone,
+)
 
 
 def resolve_num_classes(config, model_cfg):
@@ -496,18 +499,38 @@ def create_deepsense_dw_simple(config, model_config_key):
     logging.info(f"  channels_freq={channels_freq}")
     logging.info(f"  kernel_sizes_freq={kernel_sizes_freq}, strides_freq={strides_freq}")
 
-    model = DeepSenseDWSimpleBackbone(
-        in_channels=in_channels,
-        in_spectrum_len=in_spectrum_len,
-        num_classes=num_classes,
-        channels_freq=channels_freq,
-        kernel_sizes_freq=kernel_sizes_freq,
-        strides_freq=strides_freq,
-        temporal_channels=model_cfg["temporal_channels"],
-        num_temporal_layers=model_cfg["num_temporal_layers"],
-        temporal_kernel=model_cfg["temporal_kernel"],
-        fc_dim=model_cfg["fc_dim"],
-    )
+    w8a8 = False
+    if "w8a8" in model_cfg:
+        w8a8 = bool(model_cfg["w8a8"])
+
+    if w8a8:
+        logging.info("  w8a8=True (quantized simple backbone, act_bits=8)")
+        model = DeepSenseDWSimpleW8A8Backbone(
+            in_channels=in_channels,
+            in_spectrum_len=in_spectrum_len,
+            num_classes=num_classes,
+            channels_freq=channels_freq,
+            kernel_sizes_freq=kernel_sizes_freq,
+            strides_freq=strides_freq,
+            temporal_channels=model_cfg["temporal_channels"],
+            num_temporal_layers=model_cfg["num_temporal_layers"],
+            temporal_kernel=model_cfg["temporal_kernel"],
+            fc_dim=model_cfg["fc_dim"],
+            act_bits=8,
+        )
+    else:
+        model = DeepSenseDWSimpleBackbone(
+            in_channels=in_channels,
+            in_spectrum_len=in_spectrum_len,
+            num_classes=num_classes,
+            channels_freq=channels_freq,
+            kernel_sizes_freq=kernel_sizes_freq,
+            strides_freq=strides_freq,
+            temporal_channels=model_cfg["temporal_channels"],
+            num_temporal_layers=model_cfg["num_temporal_layers"],
+            temporal_kernel=model_cfg["temporal_kernel"],
+            fc_dim=model_cfg["fc_dim"],
+        )
 
     total_params = sum(p.numel() for p in model.parameters())
     logging.info(f"  Parameters: {total_params:,} ({total_params / 1e6:.4f}M)")

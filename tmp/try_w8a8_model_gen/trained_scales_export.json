@@ -1,0 +1,65 @@
+{
+  "freq_stack.0": {
+    "act_scale": 1.0411688089370728,
+    "depthwise_weight_scale_min": 0.0019423202611505985,
+    "depthwise_weight_scale_max": 0.003190132323652506,
+    "depthwise_weight_scale_len": 6,
+    "pointwise_weight_scale_min": 0.0012563889613375068,
+    "pointwise_weight_scale_max": 0.0035278538707643747,
+    "pointwise_weight_scale_len": 32
+  },
+  "freq_stack.1": {
+    "act_scale": 0.5515544414520264,
+    "depthwise_weight_scale_min": 0.0013347432250156999,
+    "depthwise_weight_scale_max": 0.003819802077487111,
+    "depthwise_weight_scale_len": 32,
+    "pointwise_weight_scale_min": 0.0010000485926866531,
+    "pointwise_weight_scale_max": 0.0023740287870168686,
+    "pointwise_weight_scale_len": 64
+  },
+  "freq_stack.2": {
+    "act_scale": 0.2629817724227905,
+    "depthwise_weight_scale_min": 0.001113805454224348,
+    "depthwise_weight_scale_max": 0.00458966800943017,
+    "depthwise_weight_scale_len": 64,
+    "pointwise_weight_scale_min": 0.0008780998177826405,
+    "pointwise_weight_scale_max": 0.001715954509563744,
+    "pointwise_weight_scale_len": 96
+  },
+  "temporal_stack.0": {
+    "act_scale": 0.04614469036459923,
+    "depthwise_weight_scale_min": 0.0008817151538096368,
+    "depthwise_weight_scale_max": 0.003848761785775423,
+    "depthwise_weight_scale_len": 64,
+    "pointwise_weight_scale_min": 0.0009032263769768178,
+    "pointwise_weight_scale_max": 0.0013008626410737634,
+    "pointwise_weight_scale_len": 64
+  },
+  "temporal_stack.1": {
+    "act_scale": 0.12132112681865692,
+    "depthwise_weight_scale_min": 0.0012964439811185002,
+    "depthwise_weight_scale_max": 0.0037414710968732834,
+    "depthwise_weight_scale_len": 64,
+    "pointwise_weight_scale_min": 0.0009059183648787439,
+    "pointwise_weight_scale_max": 0.0017640858422964811,
+    "pointwise_weight_scale_len": 64
+  },
+  "temporal_stack.2": {
+    "act_scale": 0.07961777597665787,
+    "depthwise_weight_scale_min": 0.0009089307277463377,
+    "depthwise_weight_scale_max": 0.0041579739190638065,
+    "depthwise_weight_scale_len": 64,
+    "pointwise_weight_scale_min": 0.0008142683655023575,
+    "pointwise_weight_scale_max": 0.001655875938013196,
+    "pointwise_weight_scale_len": 64
+  },
+  "temporal_stack.3": {
+    "act_scale": 0.06685340404510498,
+    "depthwise_weight_scale_min": 0.0014097107341513038,
+    "depthwise_weight_scale_max": 0.004208699334412813,
+    "depthwise_weight_scale_len": 64,
+    "pointwise_weight_scale_min": 0.0009413223597221076,
+    "pointwise_weight_scale_max": 0.0016048868419602513,
+    "pointwise_weight_scale_len": 64
+  }
+}

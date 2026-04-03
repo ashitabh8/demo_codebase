@@ -1421,6 +1421,9 @@ def validate_vanilla_supervised_contrastive(
     num_classes=None,
     collect_embeddings=False,
     max_embedding_samples=2048,
+    simple_model_training=False,
+    model_name=None,
+    config=None,
 ):
     """
     Validation for `vanilla_supervised_contrastive`.
@@ -1432,6 +1435,12 @@ def validate_vanilla_supervised_contrastive(
     When collect_embeddings is True, reuses the same forward for features
     (at most max_embedding_samples points, subsampled if needed).
     """
+    if simple_model_training and (config is None or model_name is None):
+        raise ValueError(
+            "validate_vanilla_supervised_contrastive(simple_model_training=True) "
+            "requires config and model_name"
+        )
+
     model.eval()
     val_loss = 0.0
     val_correct = 0
@@ -1478,7 +1487,12 @@ def validate_vanilla_supervised_contrastive(
             else:
                 data_clean = data_clean.to(device)
 
-            outputs_clean = model(data_clean)
+            if simple_model_training:
+                outputs_clean = simple_training_forward(
+                    model, data_clean, config, model_name
+                )
+            else:
+                outputs_clean = model(data_clean)
             logits = (
                 outputs_clean["logits"]
                 if isinstance(outputs_clean, dict)
@@ -2047,6 +2061,7 @@ def train_vanilla_supervised_contrastive(
     apply_augmentation_fn=None,
     model_name=None,
     training_config=None,
+    simple_model_training=False,
 ):
     """
     Two-view supervised contrastive training.
@@ -2179,8 +2194,16 @@ def train_vanilla_supervised_contrastive(
 
             optimizer.zero_grad()
 
-            outputs_view1 = model(data_view1)
-            outputs_view2 = model(data_view2)
+            if simple_model_training:
+                outputs_view1 = simple_training_forward(
+                    model, data_view1, config, model_name
+                )
+                outputs_view2 = simple_training_forward(
+                    model, data_view2, config, model_name
+                )
+            else:
+                outputs_view1 = model(data_view1)
+                outputs_view2 = model(data_view2)
 
             loss = loss_fn((outputs_view1, outputs_view2), loss_labels)
             loss.backward()
@@ -2229,6 +2252,9 @@ def train_vanilla_supervised_contrastive(
                 num_classes=num_classes,
                 collect_embeddings=log_embedding_epoch,
                 max_embedding_samples=2048,
+                simple_model_training=simple_model_training,
+                model_name=model_name,
+                config=config,
             )
 
         epoch_val_loss = val_results["loss"]

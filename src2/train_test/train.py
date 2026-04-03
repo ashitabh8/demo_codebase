@@ -211,6 +211,8 @@ def main():
                     scheduler=scheduler,
                     num_epochs=stage_epochs,
                     model_name=model_name,
+                    training_config=training_config,
+                    simple_model_training=simple_model_training,
                 )
             )
         elif train_type == "distillation":

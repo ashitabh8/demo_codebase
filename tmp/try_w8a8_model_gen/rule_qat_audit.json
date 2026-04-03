@@ -1,0 +1,63 @@
+{
+  "qat_layers": [
+    "freq_stack.0",
+    "freq_stack.1",
+    "freq_stack.2",
+    "temporal_stack.0",
+    "temporal_stack.1",
+    "temporal_stack.2",
+    "temporal_stack.3"
+  ],
+  "qat_quant_nodes": [
+    "freq_stack_0_depthwise",
+    "freq_stack_0_pointwise",
+    "freq_stack_1_depthwise",
+    "freq_stack_1_pointwise",
+    "freq_stack_2_depthwise",
+    "freq_stack_2_pointwise",
+    "temporal_stack_0_depthwise",
+    "temporal_stack_0_pointwise",
+    "temporal_stack_1_depthwise",
+    "temporal_stack_1_pointwise",
+    "temporal_stack_2_depthwise",
+    "temporal_stack_2_pointwise",
+    "temporal_stack_3_depthwise",
+    "temporal_stack_3_pointwise"
+  ],
+  "ir_conv_nodes": [
+    "freq_stack_0_depthwise",
+    "freq_stack_0_pointwise",
+    "freq_stack_1_depthwise",
+    "freq_stack_1_pointwise",
+    "freq_stack_2_depthwise",
+    "freq_stack_2_pointwise",
+    "temporal_stack_0_depthwise",
+    "temporal_stack_0_pointwise",
+    "temporal_stack_1_depthwise",
+    "temporal_stack_1_pointwise",
+    "temporal_stack_2_depthwise",
+    "temporal_stack_2_pointwise",
+    "temporal_stack_3_depthwise",
+    "temporal_stack_3_pointwise"
+  ],
+  "rule_nodes": [
+    "freq_stack_0_depthwise",
+    "freq_stack_0_pointwise",
+    "freq_stack_1_depthwise",
+    "freq_stack_1_pointwise",
+    "freq_stack_2_depthwise",
+    "freq_stack_2_pointwise",
+    "temporal_stack_0_depthwise",
+    "temporal_stack_0_pointwise",
+    "temporal_stack_1_depthwise",
+    "temporal_stack_1_pointwise",
+    "temporal_stack_2_depthwise",
+    "temporal_stack_2_pointwise",
+    "temporal_stack_3_depthwise",
+    "temporal_stack_3_pointwise"
+  ],
+  "extra_rules_vs_qat": [],
+  "missing_rules_vs_qat": [],
+  "extra_ir_conv_vs_qat": [],
+  "missing_ir_conv_vs_qat": []
+}
