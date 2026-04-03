@@ -8,8 +8,10 @@ import csv
 import queue
 import re
 import socket
+import sys
 import threading
 import time
+import traceback
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +29,8 @@ except ImportError:  # pragma: no cover
 
 
 LINE_RE = re.compile(r"^sample_(\d+)\s+(.*)$")
+
+_REPLAY_CSV_COLUMNS = ("sample_id", "source", "pred", "target", "inf_ms")
 
 HTML_TEMPLATE = """
 <!doctype html>
@@ -132,6 +136,7 @@ class DemoState:
         self.rolling_arduino = deque(maxlen=window_size)
         self.rolling_rpi = deque(maxlen=window_size)
         self.recent_events = deque(maxlen=40)
+        self.events_missing_label = 0
         self.lock = threading.Lock()
         self.session_writer = None
         self.session_handle = None
@@ -148,9 +153,13 @@ class DemoState:
             self.session_handle.close()
 
     def consume(self, ev: PredictionEvent) -> None:
-        gt = self.labels.get(ev.sample_id)
-        if gt is None or ev.pred is None:
+        if ev.pred is None:
             return
+        if ev.sample_id not in self.labels:
+            with self.lock:
+                self.events_missing_label += 1
+            return
+        gt = self.labels[ev.sample_id]
         src = ev.source.lower()
         correct = int(ev.pred == gt)
         with self.lock:
@@ -190,6 +199,7 @@ class DemoState:
                     "total": r_total,
                 },
                 "recent_events": list(self.recent_events),
+                "events_missing_label": self.events_missing_label,
             }
 
 
@@ -290,22 +300,43 @@ def _start_replay(
     replay_delay_s: float,
 ) -> threading.Thread:
     def _runner() -> None:
-        with replay_csv.open("r", encoding="utf-8", newline="") as handle:
-            reader = csv.DictReader(handle)
-            for row in reader:
-                if stop_evt.is_set():
+        try:
+            with replay_csv.open("r", encoding="utf-8-sig", newline="") as handle:
+                reader = csv.DictReader(handle)
+                if reader.fieldnames:
+                    reader.fieldnames = [h.strip() for h in reader.fieldnames]
+                names = set(reader.fieldnames or [])
+                missing = [c for c in _REPLAY_CSV_COLUMNS if c not in names]
+                if missing:
+                    print(
+                        f"demo_ui replay: missing columns {missing} in {replay_csv.resolve()}. "
+                        f"Found headers: {reader.fieldnames}",
+                        file=sys.stderr,
+                    )
                     return
-                ev = PredictionEvent(
-                    sample_id=int(row["sample_id"]),
-                    source=row["source"],
-                    pred=int(row["pred"]),
-                    target=int(row["target"]),
-                    inf_ms=float(row["inf_ms"]) if row["inf_ms"] not in ("", "na", "None") else None,
-                    raw=row.get("raw", ""),
-                )
-                event_q.put(ev)
-                if replay_delay_s > 0:
-                    time.sleep(replay_delay_s)
+                n = 0
+                for row in reader:
+                    if stop_evt.is_set():
+                        return
+                    ev = PredictionEvent(
+                        sample_id=int(row["sample_id"]),
+                        source=row["source"],
+                        pred=int(row["pred"]),
+                        target=int(row["target"]),
+                        inf_ms=float(row["inf_ms"]) if row["inf_ms"] not in ("", "na", "None") else None,
+                        raw=row["raw"] if "raw" in row and row["raw"] is not None else "",
+                    )
+                    event_q.put(ev)
+                    n += 1
+                    if replay_delay_s > 0:
+                        time.sleep(replay_delay_s)
+            print(f"demo_ui replay: pushed {n} events from {replay_csv.resolve()}", file=sys.stderr)
+        except Exception:
+            print(
+                f"demo_ui replay: error while reading {replay_csv.resolve()} (cwd={Path.cwd()})",
+                file=sys.stderr,
+            )
+            traceback.print_exc(file=sys.stderr)
 
     t = threading.Thread(target=_runner, daemon=True)
     t.start()
@@ -345,19 +376,32 @@ def _parse_args() -> argparse.Namespace:
         help="Delay between lines when reading file:* sources (seconds).",
     )
     parser.add_argument("--host", type=str, default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8050)
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="Listen port (default 8765; use another if Address already in use).",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
     labels = load_labels_csv(args.labels_csv)
+    print(f"demo_ui: loaded {len(labels)} rows from {args.labels_csv.resolve()} (cwd={Path.cwd()})", file=sys.stderr)
     event_q: queue.Queue = queue.Queue()
     stop_evt = threading.Event()
     state = DemoState(labels, args.window_size, args.session_csv if args.replay_csv is None else None)
 
     readers: list[threading.Thread] = []
     if args.replay_csv is not None:
+        rp = args.replay_csv.resolve()
+        if not args.replay_csv.is_file():
+            print(f"demo_ui: replay_csv is not a file: {rp} (cwd={Path.cwd()})", file=sys.stderr)
+        print(
+            f"demo_ui: replay mode, labels={args.labels_csv.resolve()} replay={rp} delay_s={args.replay_delay_s}",
+            file=sys.stderr,
+        )
         readers.append(_start_replay(args.replay_csv, event_q, stop_evt, args.replay_delay_s))
     else:
         arduino_spec = args.arduino_source

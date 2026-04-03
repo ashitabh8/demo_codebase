@@ -19,9 +19,9 @@
 1. Install web UI dependencies:
    - `pip install flask pyserial`
 2. Start UI:
-   - `python src2/gen_code/demo_ui.py --labels_csv src2/gen_code/demo_data/demo_labels.csv --arduino_port /dev/ttyACM0 --rpi_source serial:/dev/ttyUSB0 --host 0.0.0.0 --port 8050`
+   - `python src2/gen_code/demo_ui.py --labels_csv src2/gen_code/demo_data/demo_labels.csv --arduino_port /dev/ttyACM0 --rpi_source serial:/dev/ttyUSB0 --host 0.0.0.0 --port 8765`
 3. Open browser:
-   - `http://<server-ip>:8050` (or use SSH tunnel: `ssh -L 8050:localhost:8050 <user>@<server>`)
+   - `http://<server-ip>:8765` (or use SSH tunnel: `ssh -L 8765:localhost:8765 <user>@<server>`)
 3. Send `START` on Arduino serial input.
 
 ## 4) Health Checks
@@ -36,7 +36,7 @@ If live stream fails, replay from session log:
 1. Create (or use) session log:
    - `python src2/gen_code/create_mock_session_log.py --labels_csv src2/gen_code/demo_data/demo_labels.csv --output_csv src2/gen_code/demo_data/session_log.csv`
 2. Run UI in replay mode:
-   - `python src2/gen_code/demo_ui.py --labels_csv src2/gen_code/demo_data/demo_labels.csv --replay_csv src2/gen_code/demo_data/session_log.csv --host 0.0.0.0 --port 8050`
+   - `python src2/gen_code/demo_ui.py --labels_csv src2/gen_code/demo_data/demo_labels.csv --replay_csv src2/gen_code/demo_data/session_log.csv --host 0.0.0.0 --port 8765`
 
 ## 6) Demo-Day Quick Command Set
 - `STATUS` -> check running/cursor.

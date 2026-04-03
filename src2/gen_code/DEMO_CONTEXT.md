@@ -61,14 +61,14 @@ python src2/gen_code/demo_ui.py \
   --replay_csv src2/gen_code/demo_data/session_log.csv \
   --replay_delay_s 1.0 \
   --host 0.0.0.0 \
-  --port 8050
+  --port 8765
 ```
 
 If remote, tunnel from local machine:
 ```bash
-ssh -L 8050:localhost:8050 <user>@<server>
+ssh -L 8765:localhost:8765 <user>@<server>
 ```
-Then open `http://localhost:8050`.
+Then open `http://localhost:8765`.
 
 ### 5) Browser dashboard (live streams)
 ```bash
@@ -77,7 +77,7 @@ python src2/gen_code/demo_ui.py \
   --arduino_port /dev/ttyACM0 \
   --rpi_source serial:/dev/ttyUSB0 \
   --host 0.0.0.0 \
-  --port 8050
+  --port 8765
 ```
 
 ### 6) Healthcheck
@@ -92,3 +92,10 @@ python src2/gen_code/demo_healthcheck.py \
 - `--replay_delay_s` and `--file_delay_s` default to `1.0` for visual debugging.
 - For faster playback, set `--replay_delay_s 0.05`.
 - If using live serial, delay flags do not affect serial input speed.
+
+## Port already in use
+If you see `Address already in use`, pick another port:
+```bash
+python src2/gen_code/demo_ui.py ... --port 9050
+```
+Or free the old listener (example): `fuser -k 8765/tcp` or `kill <pid>`.
