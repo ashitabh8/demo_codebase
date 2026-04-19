@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Device Benchmark Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --bg: #ffffff;
+      --panel: #ffffff;
+      --line: #e7e7ea;
+      --line-2: #d8d8dd;
+      --text: #111111;
+      --muted: #6b7280;
+      --arduino: #d97706;
+      --arduino-soft: #fff7ed;
+      --rpi: #be123c;
+      --rpi-soft: #fff1f2;
+      --green: #15803d;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, Arial, sans-serif;
+      padding: 28px;
+    }
+
+    .wrap {
+      max-width: 1240px;
+      margin: 0 auto;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 20px;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+    }
+
+    .title-block h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      margin-bottom: 6px;
+    }
+
+    .title-block p {
+      color: var(--muted);
+      font-size: 0.98rem;
+    }
+
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #9ca3af;
+    }
+
+    .dot.live {
+      background: var(--green);
+    }
+
+    .controls {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 22px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      border: 1px solid var(--line-2);
+      background: #fff;
+      color: var(--text);
+      padding: 11px 18px;
+      border-radius: 10px;
+      cursor: pointer;
+      font-size: 0.95rem;
+      font-weight: 600;
+    }
+
+    button.primary {
+      background: var(--text);
+      color: #fff;
+      border-color: var(--text);
+    }
+
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .main-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 2.2fr) minmax(320px, 0.95fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--panel);
+    }
+
+    .chart-panel {
+      padding: 18px 18px 10px 18px;
+    }
+
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+
+    .panel-title {
+      font-size: 1.08rem;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .panel-subtitle {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .legend {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .legend-swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }
+
+    .chart-wrap {
+      height: 560px;
+      padding: 8px 4px 8px 0;
+    }
+
+    .side {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .device-card {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      background: #fff;
+    }
+
+    .device-card.arduino {
+      background: var(--arduino-soft);
+    }
+
+    .device-card.rpi {
+      background: var(--rpi-soft);
+    }
+
+    .device-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+      gap: 12px;
+    }
+
+    .device-name {
+      font-size: 1.08rem;
+      font-weight: 700;
+    }
+
+    .device-tag {
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+
+    .badge {
+      font-size: 0.82rem;
+      padding: 7px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.7);
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .metric {
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid rgba(0, 0, 0, 0.05);
+      border-radius: 14px;
+      padding: 14px;
+    }
+
+    .metric-label {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .metric-value {
+      font-size: 1.4rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+    }
+
+    .device-progress {
+      margin-top: 16px;
+    }
+
+    .progress-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+      font-size: 0.88rem;
+      color: var(--muted);
+    }
+
+    .bar {
+      width: 100%;
+      height: 10px;
+      background: rgba(0, 0, 0, 0.06);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 999px;
+      transition: width 0.2s ease;
+    }
+
+    .bar-fill.arduino {
+      background: var(--arduino);
+    }
+
+    .bar-fill.rpi {
+      background: var(--rpi);
+    }
+
+    @media (max-width: 980px) {
+      .main-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .chart-wrap {
+        height: 420px;
+      }
+    }
+
+    @media (max-width: 640px) {
+      body {
+        padding: 16px;
+      }
+
+      .metric-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .chart-wrap {
+        height: 340px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div class="title-block">
+        <h1>Arduino vs Raspberry Pi</h1>
+        <p>Live benchmark dashboard with progress on the x axis and running accuracy on the y axis</p>
+      </div>
+
+      <div class="status-chip">
+        <div class="dot" id="connDot"></div>
+        <span id="connLabel">Connecting</span>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button id="startBtn" class="primary">Start Run</button>
+      <button id="resetBtn">Reset</button>
+    </div>
+
+    <div class="main-grid">
+      <div class="panel chart-panel">
+        <div class="panel-head">
+          <div>
+            <div class="panel-title">Running accuracy by processed sample</div>
+            <div class="panel-subtitle">Each device adds one point after each completed sample</div>
+          </div>
+
+          <div class="legend">
+            <div class="legend-item">
+              <span class="legend-swatch" style="background: var(--arduino)"></span>
+              <span>Arduino</span>
+            </div>
+            <div class="legend-item">
+              <span class="legend-swatch" style="background: var(--rpi)"></span>
+              <span>Raspberry Pi</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="chart-wrap">
+          <canvas id="accuracyChart"></canvas>
+        </div>
+      </div>
+
+      <div class="side">
+        <div class="device-card arduino">
+          <div class="device-head">
+            <div>
+              <div class="device-name">Arduino</div>
+              <div class="device-tag">Microcontroller stream</div>
+            </div>
+            <div class="badge" id="arduinoState">Idle</div>
+          </div>
+
+          <div class="metric-grid">
+            <div class="metric">
+              <div class="metric-label">Samples</div>
+              <div class="metric-value" id="arduinoSamples">0 / 100</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Accuracy</div>
+              <div class="metric-value" id="arduinoAccuracy">0.00%</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Avg latency</div>
+              <div class="metric-value" id="arduinoLatency">0.0ms</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Correct</div>
+              <div class="metric-value" id="arduinoCorrect">0</div>
+            </div>
+          </div>
+
+          <div class="device-progress">
+            <div class="progress-head">
+              <span>Progress</span>
+              <span id="arduinoProgressLabel">0%</span>
+            </div>
+            <div class="bar">
+              <div class="bar-fill arduino" id="arduinoBar"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="device-card rpi">
+          <div class="device-head">
+            <div>
+              <div class="device-name">Raspberry Pi</div>
+              <div class="device-tag">Edge compute stream</div>
+            </div>
+            <div class="badge" id="rpiState">Idle</div>
+          </div>
+
+          <div class="metric-grid">
+            <div class="metric">
+              <div class="metric-label">Samples</div>
+              <div class="metric-value" id="rpiSamples">0 / 100</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Accuracy</div>
+              <div class="metric-value" id="rpiAccuracy">0.00%</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Avg latency</div>
+              <div class="metric-value" id="rpiLatency">0.0ms</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Correct</div>
+              <div class="metric-value" id="rpiCorrect">0</div>
+            </div>
+          </div>
+
+          <div class="device-progress">
+            <div class="progress-head">
+              <span>Progress</span>
+              <span id="rpiProgressLabel">0%</span>
+            </div>
+            <div class="bar">
+              <div class="bar-fill rpi" id="rpiBar"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let ws = null
+    let isConnected = false
+
+    const els = {
+      connDot: document.getElementById("connDot"),
+      connLabel: document.getElementById("connLabel"),
+      startBtn: document.getElementById("startBtn"),
+      resetBtn: document.getElementById("resetBtn"),
+
+      arduinoState: document.getElementById("arduinoState"),
+      arduinoSamples: document.getElementById("arduinoSamples"),
+      arduinoAccuracy: document.getElementById("arduinoAccuracy"),
+      arduinoLatency: document.getElementById("arduinoLatency"),
+      arduinoCorrect: document.getElementById("arduinoCorrect"),
+      arduinoBar: document.getElementById("arduinoBar"),
+      arduinoProgressLabel: document.getElementById("arduinoProgressLabel"),
+
+      rpiState: document.getElementById("rpiState"),
+      rpiSamples: document.getElementById("rpiSamples"),
+      rpiAccuracy: document.getElementById("rpiAccuracy"),
+      rpiLatency: document.getElementById("rpiLatency"),
+      rpiCorrect: document.getElementById("rpiCorrect"),
+      rpiBar: document.getElementById("rpiBar"),
+      rpiProgressLabel: document.getElementById("rpiProgressLabel"),
+    }
+
+    const ctx = document.getElementById("accuracyChart").getContext("2d")
+
+    const accuracyChart = new Chart(ctx, {
+      type: "line",
+      data: {
+        datasets: [
+          {
+            label: "Arduino",
+            data: [],
+            borderColor: "#d97706",
+            backgroundColor: "#d97706",
+            pointBackgroundColor: "#d97706",
+            pointBorderColor: "#d97706",
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            borderWidth: 2.5,
+            tension: 0.18,
+          },
+          {
+            label: "Raspberry Pi",
+            data: [],
+            borderColor: "#be123c",
+            backgroundColor: "#be123c",
+            pointBackgroundColor: "#be123c",
+            pointBorderColor: "#be123c",
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            borderWidth: 2.5,
+            tension: 0.18,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        plugins: {
+          legend: {
+            display: false,
+          },
+          tooltip: {
+            callbacks: {
+              label: function(context) {
+                return `${context.dataset.label}: ${context.parsed.y.toFixed(2)}% at sample ${context.parsed.x}`
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            type: "linear",
+            min: 0,
+            max: 100,
+            title: {
+              display: true,
+              text: "Samples processed",
+              color: "#4b5563",
+              font: {
+                size: 13,
+                weight: "600",
+              },
+            },
+            grid: {
+              color: "#ececf0",
+            },
+            ticks: {
+              color: "#6b7280",
+              stepSize: 10,
+            },
+            border: {
+              color: "#d8d8dd",
+            },
+          },
+          y: {
+            min: 0,
+            max: 100,
+            title: {
+              display: true,
+              text: "Running accuracy percent",
+              color: "#4b5563",
+              font: {
+                size: 13,
+                weight: "600",
+              },
+            },
+            grid: {
+              color: "#ececf0",
+            },
+            ticks: {
+              color: "#6b7280",
+              callback: function(value) {
+                return `${value}%`
+              }
+            },
+            border: {
+              color: "#d8d8dd",
+            },
+          },
+        },
+      },
+    })
+
+    function latestPoint(history) {
+      if (!history || history.length === 0) {
+        return null
+      }
+      return history[history.length - 1]
+    }
+
+    function setConnectionState(live) {
+      isConnected = live
+      els.connDot.className = live ? "dot live" : "dot"
+      els.connLabel.textContent = live ? "Live" : "Reconnecting"
+      els.startBtn.disabled = !live
+    }
+
+    function sendAction(action) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        alert("WebSocket not connected yet. Wait until the badge says Live.")
+        return
+      }
+
+      ws.send(JSON.stringify({ action }))
+    }
+
+    function connect() {
+      const protocol = location.protocol === "https:" ? "wss" : "ws"
+      ws = new WebSocket(`${protocol}://${location.host}/ws`)
+
+      ws.onopen = function() {
+        setConnectionState(true)
+      }
+
+      ws.onclose = function() {
+        setConnectionState(false)
+        setTimeout(connect, 1500)
+      }
+
+      ws.onerror = function(err) {
+        console.log("WebSocket error:", err)
+      }
+
+      ws.onmessage = function(event) {
+        const state = JSON.parse(event.data)
+        renderState(state)
+      }
+    }
+
+    function renderDevice(prefix, device, totalSamples, isStarted, isOver) {
+      const progress = totalSamples > 0 ? (device.samples / totalSamples) * 100 : 0
+
+      els[`${prefix}Samples`].textContent = `${device.samples} / ${totalSamples}`
+      els[`${prefix}Accuracy`].textContent = `${device.accuracy.toFixed(2)}%`
+      els[`${prefix}Latency`].textContent = `${device.avg_latency_ms.toFixed(1)}ms`
+      els[`${prefix}Correct`].textContent = `${device.correct}`
+      els[`${prefix}Bar`].style.width = `${progress}%`
+      els[`${prefix}ProgressLabel`].textContent = `${progress.toFixed(0)}%`
+
+      if (!isStarted) {
+        els[`${prefix}State`].textContent = "Idle"
+      } else if (isOver || device.done) {
+        els[`${prefix}State`].textContent = "Complete"
+      } else {
+        els[`${prefix}State`].textContent = "Running"
+      }
+    }
+
+    function updateChart(arduinoHistory, rpiHistory) {
+      accuracyChart.data.datasets[0].data = arduinoHistory.map(p => ({ x: p.x, y: p.y }))
+      accuracyChart.data.datasets[1].data = rpiHistory.map(p => ({ x: p.x, y: p.y }))
+
+      const aLast = latestPoint(arduinoHistory)
+      const rLast = latestPoint(rpiHistory)
+
+      accuracyChart.data.datasets[0].pointRadius = function(context) {
+        return aLast && context.dataIndex === arduinoHistory.length - 1 ? 4 : 0
+      }
+
+      accuracyChart.data.datasets[1].pointRadius = function(context) {
+        return rLast && context.dataIndex === rpiHistory.length - 1 ? 4 : 0
+      }
+
+      accuracyChart.update("none")
+    }
+
+    function renderState(state) {
+      const totalSamples = state.total_samples
+      const arduino = state.racers.arduino
+      const rpi = state.racers.rpi
+
+      renderDevice("arduino", arduino, totalSamples, state.started, state.over)
+      renderDevice("rpi", rpi, totalSamples, state.started, state.over)
+
+      updateChart(arduino.history, rpi.history)
+
+      els.startBtn.disabled = !isConnected || (state.started && !state.over)
+    }
+
+    els.startBtn.addEventListener("click", function() {
+      sendAction("start")
+    })
+
+    els.resetBtn.addEventListener("click", function() {
+      sendAction("reset")
+    })
+
+    setConnectionState(false)
+    connect()
+  </script>
+</body>
+</html>
