@@ -39,7 +39,12 @@ from dataset_utils.MultiModalDataLoader import create_dataloaders
 from data_augmenter import create_augmenter, apply_augmentation
 from models.create_models import create_single_modal_model
 from train_test.loss import get_loss_function
-from train_test.train_test_utils import load_checkpoint
+from train_test.train_test_utils import (
+    load_checkpoint,
+    validate,
+    validate_multilabel,
+    validate_vanilla_supervised_contrastive,
+)
 from train_test.normalize import setup_normalization
 
 # Configure logging (console only initially, file handler added later)
@@ -165,6 +170,13 @@ def main():
 
     model_config = config["models"][model_name]
 
+    simple_model_training = False
+    if "simple_model_training" in experiment_config:
+        simple_model_training = bool(experiment_config["simple_model_training"])
+
+    task_name = config["task_name"]
+    num_classes = config[task_name]["num_classes"]
+
     logging.info(f"  Model: {model_name}")
     logging.info(f"  Architecture: {model_config['model_type']}")
     logging.info(f"  Modality: {model_config.get('active_modality', 'N/A')}")
@@ -194,12 +206,6 @@ def main():
     logging.info("Model loaded and set to eval mode")
     
     # ========================================================================
-    # 11b. Calculate Memory Requirements
-    # ========================================================================
-    memory_info = None
-    input_memory_info = None
-    
-    # ========================================================================
     # 12. Setup Loss Function
     # ========================================================================
     logging.info("\nSetting up loss function...")
@@ -207,84 +213,73 @@ def main():
     logging.info(f"  Loss function: {loss_fn_name}")
     
     # ========================================================================
-    # 13. Run Testing
+    # 13. Run Testing (match train.py / finetune.py validation)
     # ========================================================================
     logging.info("\n" + "=" * 80)
     logging.info("STARTING TESTING")
     logging.info("=" * 80)
-    
-    # Test standard model
-    logging.info("\nTesting standard model...")
 
-    model.eval()
-    test_loss = 0.0
-    test_correct = 0
-    test_total = 0
-    all_preds = []
-    all_labels = []
-
-    with torch.no_grad():
-        for batch_data in test_loader:
-            # Unpack batch
-            if len(batch_data) == 3:
-                data, labels, idx = batch_data
-            else:
-                data, labels = batch_data[0], batch_data[1]
-
-            # Apply augmentation if provided (for frequency transformation)
-            if augmenter is not None:
-                data, labels = apply_augmentation(augmenter, data, labels)
-
-            # Move to device
-            labels = labels.to(device)
-            if isinstance(data, dict):
-                for loc in data:
-                    for mod in data[loc]:
-                        data[loc][mod] = data[loc][mod].to(device)
-            else:
-                data = data.to(device)
-
-            # Forward pass
-            outputs = model(data)
-
-            # Extract logits if dict output
-            if isinstance(outputs, dict):
-                logits = outputs['logits']
-            else:
-                logits = outputs
-
-            # Handle one-hot labels
-            if len(labels.shape) == 2 and labels.shape[1] > 1:
-                loss_labels = torch.argmax(labels, dim=1)
-            else:
-                loss_labels = labels
-
-            loss = loss_fn(outputs, loss_labels)
-
-            test_loss += loss.item() * labels.size(0)
-            predictions = torch.argmax(logits, dim=1)
-            test_correct += (predictions == loss_labels).sum().item()
-            test_total += labels.size(0)
-
-            all_preds.extend(predictions.cpu().numpy())
-            all_labels.extend(loss_labels.cpu().numpy())
-
-    test_loss /= test_total
-    test_acc = test_correct / test_total
-
-    test_results = {
-        'loss': test_loss,
-        'accuracy': test_acc,
-        'predictions': all_preds,
-        'labels': all_labels
-    }
+    logging.info("\nEvaluating on test set (same helper as training validation)...")
+    if loss_fn_name == "ce_supcon":
+        logging.info(
+            "  validate_vanilla_supervised_contrastive: clean inputs "
+            "(augmentation_mode='no' during forward, same as val in SupCon training)"
+        )
+        test_results = validate_vanilla_supervised_contrastive(
+            model,
+            test_loader,
+            loss_fn,
+            device,
+            augmenter=augmenter,
+            apply_augmentation_fn=apply_augmentation,
+            num_classes=num_classes,
+            collect_embeddings=False,
+            simple_model_training=simple_model_training,
+            model_name=model_name,
+            config=config,
+        )
+    elif loss_fn_name == "bce_multilabel":
+        logging.info(
+            "  validate_multilabel: same augmenter usage as train() validation"
+        )
+        test_results = validate_multilabel(
+            model,
+            test_loader,
+            loss_fn,
+            device,
+            loss_source_config,
+            augmenter=augmenter,
+            apply_augmentation_fn=apply_augmentation,
+            simple_model_training=simple_model_training,
+            model_name=model_name,
+            config=config,
+        )
+    else:
+        logging.info(
+            "  validate: augmenter applied on each batch (same as val in train())"
+        )
+        test_results = validate(
+            model,
+            test_loader,
+            loss_fn,
+            device,
+            augmenter=augmenter,
+            apply_augmentation_fn=apply_augmentation,
+            num_classes=num_classes,
+            simple_model_training=simple_model_training,
+            model_name=model_name,
+            config=config,
+        )
 
     # Log results
     logging.info("\n" + "-" * 80)
-    logging.info("TEST RESULTS (Standard Model)")
+    logging.info("TEST RESULTS")
     logging.info("-" * 80)
     logging.info(f"Loss: {test_results['loss']:.4f}")
-    logging.info(f"Accuracy: {test_results['accuracy']:.4f}")
+    if loss_fn_name == "bce_multilabel":
+        logging.info(f"mAP: {test_results['mAP']:.4f}")
+    else:
+        logging.info(f"Accuracy: {test_results['accuracy']:.4f}")
     logging.info("-" * 80)
     
     # ========================================================================
@@ -292,24 +287,30 @@ def main():
     # ========================================================================
     logging.info("\nSaving results to file...")
     results_file = test_dir / "test_results.txt"
-    
-    # Calculate total test samples
-    test_samples = test_total
-    
+
+    if loss_fn_name == "bce_multilabel":
+        test_samples = int(test_results["raw_probs"].shape[0])
+    else:
+        test_samples = len(test_results["predictions"])
+
     with open(results_file, 'w') as f:
         f.write("=" * 80 + "\n")
         f.write("TEST RESULTS\n")
         f.write("=" * 80 + "\n")
         f.write(f"Experiment: {experiment_name}\n")
         f.write(f"Model: {model_name}\n")
+        f.write(f"Loss function: {loss_fn_name}\n")
         f.write(f"Checkpoint: {checkpoint_path}\n")
         f.write(f"Device: {device}\n")
         f.write(f"Test samples: {test_samples}\n")
         f.write("\n")
-        
+
         f.write(f"Loss: {test_results['loss']:.4f}\n")
-        f.write(f"Accuracy: {test_results['accuracy']:.4f}\n")
-        
+        if loss_fn_name == "bce_multilabel":
+            f.write(f"mAP: {test_results['mAP']:.4f}\n")
+        else:
+            f.write(f"Accuracy: {test_results['accuracy']:.4f}\n")
+
         f.write("\n" + "=" * 80 + "\n")
     
     logging.info(f"  Results saved to: {results_file}")
