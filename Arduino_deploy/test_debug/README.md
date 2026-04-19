@@ -27,11 +27,14 @@ There are only a few things you need to change.
 
 ### In the Arduino code
 
+
+
+
 Update your WiFi credentials here:
 
 ```cpp
 const char* SSID = "Ashitabh";
 const char* PASSWORD = "ashitabh";
 
-In the python file:
+###In the python file:
 Just update the IP
