@@ -146,6 +146,7 @@
     .panel-subtitle {
       color: var(--muted);
       font-size: 0.9rem;
+      max-width: 680px;
     }
 
     .legend {
@@ -314,7 +315,6 @@
     <div class="topbar">
       <div class="title-block">
         <h1>Arduino vs Raspberry Pi</h1>
-        <p>Live benchmark dashboard with progress on the x axis and running accuracy on the y axis</p>
       </div>
 
       <div class="status-chip">
@@ -332,8 +332,7 @@
       <div class="panel chart-panel">
         <div class="panel-head">
           <div>
-            <div class="panel-title">Running accuracy by processed sample</div>
-            <div class="panel-subtitle">Each device adds one point after each completed sample</div>
+            <div class="panel-title">Batch accuracy by processed batch</div>
           </div>
 
           <div class="legend">
@@ -358,26 +357,25 @@
           <div class="device-head">
             <div>
               <div class="device-name">Arduino</div>
-              <div class="device-tag">Microcontroller stream</div>
             </div>
             <div class="badge" id="arduinoState">Idle</div>
           </div>
 
           <div class="metric-grid">
             <div class="metric">
-              <div class="metric-label">Samples</div>
-              <div class="metric-value" id="arduinoSamples">0 / 100</div>
+              <div class="metric-label">Batches</div>
+              <div class="metric-value" id="arduinoBatches">0 / 0</div>
             </div>
             <div class="metric">
               <div class="metric-label">Accuracy</div>
               <div class="metric-value" id="arduinoAccuracy">0.00%</div>
             </div>
             <div class="metric">
-              <div class="metric-label">Avg latency</div>
-              <div class="metric-value" id="arduinoLatency">0.0ms</div>
+              <div class="metric-label">Batch latency</div>
+              <div class="metric-value" id="arduinoLatency">0.00ms</div>
             </div>
             <div class="metric">
-              <div class="metric-label">Correct</div>
+              <div class="metric-label">Correct samples</div>
               <div class="metric-value" id="arduinoCorrect">0</div>
             </div>
           </div>
@@ -397,26 +395,25 @@
           <div class="device-head">
             <div>
               <div class="device-name">Raspberry Pi</div>
-              <div class="device-tag">Edge compute stream</div>
             </div>
             <div class="badge" id="rpiState">Idle</div>
           </div>
 
           <div class="metric-grid">
             <div class="metric">
-              <div class="metric-label">Samples</div>
-              <div class="metric-value" id="rpiSamples">0 / 100</div>
+              <div class="metric-label">Batches</div>
+              <div class="metric-value" id="rpiBatches">0 / 0</div>
             </div>
             <div class="metric">
               <div class="metric-label">Accuracy</div>
               <div class="metric-value" id="rpiAccuracy">0.00%</div>
             </div>
             <div class="metric">
-              <div class="metric-label">Avg latency</div>
-              <div class="metric-value" id="rpiLatency">0.0ms</div>
+              <div class="metric-label">Batch latency</div>
+              <div class="metric-value" id="rpiLatency">0.00ms</div>
             </div>
             <div class="metric">
-              <div class="metric-label">Correct</div>
+              <div class="metric-label">Correct samples</div>
               <div class="metric-value" id="rpiCorrect">0</div>
             </div>
           </div>
@@ -446,7 +443,7 @@
       resetBtn: document.getElementById("resetBtn"),
 
       arduinoState: document.getElementById("arduinoState"),
-      arduinoSamples: document.getElementById("arduinoSamples"),
+      arduinoBatches: document.getElementById("arduinoBatches"),
       arduinoAccuracy: document.getElementById("arduinoAccuracy"),
       arduinoLatency: document.getElementById("arduinoLatency"),
       arduinoCorrect: document.getElementById("arduinoCorrect"),
@@ -454,7 +451,7 @@
       arduinoProgressLabel: document.getElementById("arduinoProgressLabel"),
 
       rpiState: document.getElementById("rpiState"),
-      rpiSamples: document.getElementById("rpiSamples"),
+      rpiBatches: document.getElementById("rpiBatches"),
       rpiAccuracy: document.getElementById("rpiAccuracy"),
       rpiLatency: document.getElementById("rpiLatency"),
       rpiCorrect: document.getElementById("rpiCorrect"),
@@ -505,7 +502,7 @@
           tooltip: {
             callbacks: {
               label: function(context) {
-                return `${context.dataset.label}: ${context.parsed.y.toFixed(2)}% at sample ${context.parsed.x}`
+                return `${context.dataset.label}: ${context.parsed.y.toFixed(2)}% at batch ${context.parsed.x}`
               }
             }
           }
@@ -514,10 +511,10 @@
           x: {
             type: "linear",
             min: 0,
-            max: 100,
+            max: 47,
             title: {
               display: true,
-              text: "Samples processed",
+              text: "Batches processed",
               color: "#4b5563",
               font: {
                 size: 13,
@@ -529,7 +526,7 @@
             },
             ticks: {
               color: "#6b7280",
-              stepSize: 10,
+              stepSize: 5,
             },
             border: {
               color: "#d8d8dd",
@@ -540,7 +537,7 @@
             max: 100,
             title: {
               display: true,
-              text: "Running accuracy percent",
+              text: "Batch accuracy percent",
               color: "#4b5563",
               font: {
                 size: 13,
@@ -610,12 +607,12 @@
       }
     }
 
-    function renderDevice(prefix, device, totalSamples, isStarted, isOver) {
-      const progress = totalSamples > 0 ? (device.samples / totalSamples) * 100 : 0
+    function renderDevice(prefix, device, totalBatches, isStarted, isOver) {
+      const progress = totalBatches > 0 ? (device.batches / totalBatches) * 100 : 0
 
-      els[`${prefix}Samples`].textContent = `${device.samples} / ${totalSamples}`
+      els[`${prefix}Batches`].textContent = `${device.batches} / ${totalBatches}`
       els[`${prefix}Accuracy`].textContent = `${device.accuracy.toFixed(2)}%`
-      els[`${prefix}Latency`].textContent = `${device.avg_latency_ms.toFixed(1)}ms`
+      els[`${prefix}Latency`].textContent = `${device.current_latency_ms.toFixed(2)}ms`
       els[`${prefix}Correct`].textContent = `${device.correct}`
       els[`${prefix}Bar`].style.width = `${progress}%`
       els[`${prefix}ProgressLabel`].textContent = `${progress.toFixed(0)}%`
@@ -629,9 +626,10 @@
       }
     }
 
-    function updateChart(arduinoHistory, rpiHistory) {
+    function updateChart(arduinoHistory, rpiHistory, totalBatches) {
       accuracyChart.data.datasets[0].data = arduinoHistory.map(p => ({ x: p.x, y: p.y }))
       accuracyChart.data.datasets[1].data = rpiHistory.map(p => ({ x: p.x, y: p.y }))
+      accuracyChart.options.scales.x.max = totalBatches
 
       const aLast = latestPoint(arduinoHistory)
       const rLast = latestPoint(rpiHistory)
@@ -648,16 +646,16 @@
     }
 
     function renderState(state) {
-      const totalSamples = state.total_samples
+      const totalBatches = state.total_batches
       const arduino = state.racers.arduino
       const rpi = state.racers.rpi
 
-      renderDevice("arduino", arduino, totalSamples, state.started, state.over)
-      renderDevice("rpi", rpi, totalSamples, state.started, state.over)
+      renderDevice("arduino", arduino, totalBatches, state.started, state.over)
+      renderDevice("rpi", rpi, totalBatches, state.started, state.over)
 
-      updateChart(arduino.history, rpi.history)
+      updateChart(arduino.history, rpi.history, totalBatches)
 
-      els.startBtn.disabled = !isConnected || (state.started && !state.over)
+      els.startBtn.disabled = !isConnected || state.started
     }
 
     els.startBtn.addEventListener("click", function() {
