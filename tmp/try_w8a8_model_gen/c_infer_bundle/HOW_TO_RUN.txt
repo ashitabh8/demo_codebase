@@ -1,0 +1,34 @@
+W8A8 C model — standalone inference bundle
+==========================================
+
+What this is
+------------
+- model.c / weights.h / nn_ops_*.h: portable float-in, float-out inference (int8 weights inside).
+- inputs/test_input_0.txt … test_input_49.txt: one float per line (10752 values = NHWC 1×7×256×6).
+- true_labels.h: C array TEST_TRUE_LABELS[i] for sample index i (same order as test_input_i.txt).
+- true_labels.txt: same labels as text lines "sample_N <class>" (for scripts; not used by the C binary).
+
+Note about the original "samples/" folder
+-----------------------------------------
+Those sample_*.txt files are metadata reports (paths, PyTorch/quant predictions, etc.).
+They do NOT contain tensor values. This bundle uses inputs/*.txt instead.
+
+Requirements
+------------
+- GCC (or Clang) and standard C library; math library (-lm).
+
+Build
+-----
+  cd c_infer_bundle
+  make
+
+Run (must stay in this directory so paths to inputs/ resolve)
+-------------------------------------------------------------
+  ./run_model
+
+Or in one step:
+  make run
+
+Clean
+-----
+  make clean

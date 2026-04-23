@@ -30,7 +30,8 @@ vehicle_classification:
         val_index_file: /data/kara4/Parkland/time_data_partition/val_index.txt
         test_index_file: /data/kara4/Parkland/time_data_partition/test_index.txt
 
-base_experiment_dir: /home/madhav5/demo_codebase/src2/experiments
+# base_experiment_dir: /home/madhav5/demo_codebase/src2/experiments
+base_experiment_dir: /data/misra8/demo_experiments
 
 cross_entropy:
         name: "cross_entropy"
@@ -230,7 +231,7 @@ models:
 
         student_audio_deepsense_dw_large_mel:
                 model_source: "create_single_modal_model"
-                model_type: "deepsense_dw"
+                model_type: "deepsense_dw_simple"
                 active_modality: "audio"
                 in_channels: 1       # Mel: single magnitude channel
                 in_spectrum_len: 80  # 80 Mel bins
@@ -349,7 +350,7 @@ models:
         # freq_out: 80 -> (80-5)//2+1=38 -> (38-3)//2+1=18 -> 18 (3 layers)
         student_audio_deepsense_dw_mel:
                 model_source: "create_single_modal_model"
-                model_type: "deepsense_dw"
+                model_type: "deepsense_dw_simple"
                 active_modality: "audio"
                 # Per-model overrides for Mel input shape (bypasses loc_mod_in_freq_channels /
                 # loc_mod_spectrum_len so that FFT-based models are unaffected)
@@ -704,9 +705,10 @@ experiments:
                         freq_augmenters: ["no"]
 
         only_audio_resnet18_supcon:
-                model: "teacher_audio_resnet18"
+                model: "student_audio_deepsense_dw_large_mel"
+                preprocess_mode: "mel"
                 training: "vanilla_supervised_contrastive"
-                task_name: fine_tune_vehicle_classification
+                task_name: vehicle_classification
                 dataloader: parkland_single_label
                 fixed_augmenters:
                         time_augmenters: ["time_mask"]
@@ -885,7 +887,7 @@ experiments:
                 fixed_augmenters:
                         time_augmenters: ["scaling", "time_mask", "time_mask"]
                         freq_augmenters: ["freq_mask", "freq_mask"]
-                checkpoint_path: "/home/madhav5/demo_codebase/src2/experiments/20260331_144131_pretrain_pretrain_audio_deepsense_dw_large_mel/models/best_pretrain_model.pth"
+                checkpoint_path: "/data/misra8/demo_experiments/20260419_220804_pretrain_pretrain_audio_deepsense_dw_large_mel/models/best_pretrain_model.pth"
 
         # W8A8 QAT pretrain experiment.
         # Run: python pretrain.py --experiment_name pretrain_audio_deepsense_dw_large_mel_w8a8 \

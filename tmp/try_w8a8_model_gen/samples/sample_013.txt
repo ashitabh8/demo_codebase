@@ -1,0 +1,17 @@
+sample_index: 3
+source_path: /home/tkimura4/data/datasets/ACIDS/individual_time_samples_one_sec/Gv4d2038_165.pt
+ground_truth: 4
+ground_truth_class: 4
+float_prediction: 4
+float_predicted_class: 4
+float_confidence: 0.831549
+float_correct: 1
+quant_prediction: 4
+quant_predicted_class: 4
+quant_confidence: 0.937769
+quant_correct: 1
+predictions_match: 1
+input_shape: [6, 7, 256]
+input_dtype: float32
+float_model: student_audio_deepsense_dw_simple_tiny
+quant_model: student_audio_deepsense_dw_simple_tiny_w8a8

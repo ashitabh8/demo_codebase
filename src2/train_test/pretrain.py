@@ -122,19 +122,25 @@ def main():
         config["models"][model_name]["pretrain_mode"] = True
         model = create_single_modal_model(config, model_name)
         logging.info(f"Model created: {model_name}")
+        # breakpoint()
 
         # W8A8 calibration (if the model uses quantized layers)
         if has_w8a8_layers(model):
             import torch
+
             _device = torch.device(
-                f"cuda:{config.get('gpu', 0)}" if torch.cuda.is_available() else "cpu"
+                f"cuda:{config.get('gpu', 0)}"
+                if torch.cuda.is_available()
+                else "cpu"
             )
             n_calib = int(training_config.get("w8a8_calib_batches", 50))
             logging.info(
                 "\nRunning W8A8 activation calibration (%d batches)...", n_calib
             )
             calibrate_w8a8(
-                model, train_loader, _device,
+                model,
+                train_loader,
+                _device,
                 n_batches=n_calib,
                 augmenter=augmenter,
                 apply_augmentation_fn=apply_augmentation,
@@ -151,7 +157,9 @@ def main():
         # Setup Optimizer and Scheduler
         # ====================================================================
         logging.info("\nSetting up optimizer and scheduler...")
-        optimizer = setup_optimizer(model, config, training_config=training_config)
+        optimizer = setup_optimizer(
+            model, config, training_config=training_config
+        )
         scheduler = setup_scheduler(optimizer, config, training_config)
 
         # ====================================================================

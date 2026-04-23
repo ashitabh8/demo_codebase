@@ -17,6 +17,7 @@ from models.ResNetSimple import (
 )
 from models.DeepSenseLatest import SingleModalDeepSense
 from models.DeepSenseDepthwise import SingleModalDeepSenseDW
+from models.DeepSenseDWClean import SingleModalDeepSenseDWClean
 from models.DeepSenseDWSimple import (
     DeepSenseDWSimpleBackbone,
     DeepSenseDWSimpleW8A8Backbone,
@@ -86,6 +87,8 @@ def create_single_modal_model(config, model_name):
         return create_deepsense(config, model_name)
     if model_type == "deepsense_dw":
         return create_deepsense_dw(config, model_name)
+    if model_type == "deepsense_dw_clean":
+        return create_deepsense_dw_clean(config, model_name)
     if model_type == "deepsense_dw_simple":
         return create_deepsense_dw_simple(config, model_name)
 
@@ -428,6 +431,119 @@ def create_deepsense_dw(config, model_config_key):
         output_dims=output_dims,
         w8a8=w8a8,
         w8a16=w8a16,
+    )
+
+    total_params = sum(p.numel() for p in model.parameters())
+    logging.info(f"  Parameters: {total_params:,} ({total_params / 1e6:.4f}M)")
+    return model
+
+
+def create_deepsense_dw_clean(config, model_config_key):
+    """
+    Create a SingleModalDeepSenseDWClean from YAML config.
+
+    Simplified variant of create_deepsense_dw: no w8a8/w8a16 quantization,
+    no GELU (ReLU only), no BiGRU/recurrent layers.
+
+    Required keys under config["models"][model_config_key]:
+        model_type:          "deepsense_dw_clean"
+        active_modality:     str
+        channels_freq:       list[int]
+        kernel_sizes_freq:   list[[int, int]]
+        strides_freq:        list[[int, int]]
+                             len(channels_freq) == len(kernel_sizes_freq) == len(strides_freq)
+        temporal_channels:   int
+        num_temporal_layers: int
+        temporal_kernel:     int
+        fc_dim:              int
+        dropout_ratio:       float
+
+    in_channels and in_spectrum_len looked up from:
+        config["loc_mod_in_freq_channels"][location][modality]
+        config["loc_mod_spectrum_len"][location][modality]
+    """
+    model_cfg = config["models"][model_config_key]
+    active_modality = model_cfg["active_modality"]
+
+    location_names = config["location_names"]
+    if len(location_names) != 1:
+        raise ValueError(
+            f"SingleModalDeepSenseDWClean expects exactly one location, got {location_names}"
+        )
+    location_name = location_names[0]
+
+    if "in_channels" in model_cfg:
+        in_channels = model_cfg["in_channels"]
+    else:
+        in_channels = config["loc_mod_in_freq_channels"][location_name][
+            active_modality
+        ]
+    if "in_spectrum_len" in model_cfg:
+        in_spectrum_len = model_cfg["in_spectrum_len"]
+    else:
+        in_spectrum_len = config["loc_mod_spectrum_len"][location_name][
+            active_modality
+        ]
+    num_classes = resolve_num_classes(config, model_cfg)
+
+    channels_freq = model_cfg["channels_freq"]
+    kernel_sizes_freq = model_cfg["kernel_sizes_freq"]
+    strides_freq = model_cfg["strides_freq"]
+
+    if not (len(channels_freq) == len(kernel_sizes_freq) == len(strides_freq)):
+        raise ValueError(
+            f"[{model_config_key}] channels_freq, kernel_sizes_freq, strides_freq must have "
+            f"equal length; got {len(channels_freq)}, {len(kernel_sizes_freq)}, {len(strides_freq)}"
+        )
+
+    temporal_channels = model_cfg["temporal_channels"]
+    num_temporal_layers = model_cfg["num_temporal_layers"]
+    temporal_kernel = model_cfg["temporal_kernel"]
+
+    logging.info(f"Creating SingleModalDeepSenseDWClean ({model_config_key})")
+    logging.info(f"  modality={active_modality}, location={location_name}")
+    logging.info(
+        f"  in_channels={in_channels}, in_spectrum_len={in_spectrum_len}, "
+        f"freq_layers={len(channels_freq)}"
+    )
+    logging.info(f"  channels_freq={channels_freq}")
+    logging.info(
+        f"  kernel_sizes_freq={kernel_sizes_freq}, strides_freq={strides_freq}"
+    )
+    logging.info(
+        f"  temporal_channels={temporal_channels}, "
+        f"num_temporal_layers={num_temporal_layers}, temporal_kernel={temporal_kernel}"
+    )
+
+    pretrain_mode = model_cfg["pretrain_mode"]
+    proj_hidden_dim = model_cfg["proj_hidden_dim"]
+    proj_out_dim = model_cfg["proj_out_dim"]
+
+    output_dims = None
+    if "output_dims" in model_cfg:
+        output_dims = model_cfg["output_dims"]
+
+    if output_dims is not None:
+        logging.info(f"  output_dims={output_dims}")
+
+    model = SingleModalDeepSenseDWClean(
+        modality_name=active_modality,
+        location_name=location_name,
+        in_channels=in_channels,
+        in_spectrum_len=in_spectrum_len,
+        num_classes=num_classes,
+        channels_freq=channels_freq,
+        kernel_sizes_freq=kernel_sizes_freq,
+        strides_freq=strides_freq,
+        temporal_channels=temporal_channels,
+        num_temporal_layers=num_temporal_layers,
+        temporal_kernel=temporal_kernel,
+        fc_dim=model_cfg["fc_dim"],
+        dropout_ratio=model_cfg["dropout_ratio"],
+        pretrain_mode=pretrain_mode,
+        proj_hidden_dim=proj_hidden_dim,
+        proj_out_dim=proj_out_dim,
+        output_dims=output_dims,
     )
 
     total_params = sum(p.numel() for p in model.parameters())
