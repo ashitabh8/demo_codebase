@@ -77,9 +77,14 @@ No new conv or batchnorm kernels. Conv1d/BatchNorm1d are pure codegen wrappers t
 
 `c_printer.py` currently sizes activation slots from `output_shape`. The new ops don't change shape arithmetic — they preserve or trivially reduce dims that are already on the IR node. No new shape inference required.
 
-### Quantization (out of scope for this spec)
+### Quantization
 
-The user wants conv and matmul to be the *only* ops that ever go to lower precision. This spec adds **float-only** Conv1d/BatchNorm1d codegen. INT8 paths for Conv1d will be a follow-up that can also be wrappers (`conv2d_nhwc_int8` with `H=1`). BN/ReLU/permute/mean stay float regardless of model dtype.
+The user wants conv and matmul to be the *only* ops that ever go to lower precision. BN/ReLU/permute/mean stay float regardless of model dtype.
+
+**INT8 Conv1d** is in scope as a wrapper (no new int8 kernel):
+- The existing `conv2d_nhwc_int8`, `conv2d_nhwc_int8_per_channel`, `conv2d_nhwc_int8_to_float`, `depthwise_conv2d_nhwc_int8`, and `depthwise_conv2d_nhwc_int8_to_float` all accept `in_h`, `in_w`, `k_h`, `k_w` etc. The Conv1d INT8 codegen wrapper emits the same call with `in_h=1`, `k_h=1`, `stride_h=1`, `pad_h=0`.
+- Quantization rule matching: existing rules use regex on op names (e.g. `r'.*conv.*'`). Lowering Conv1d to IR op_type `'conv1d'` ensures these patterns continue to match. Any rule that only checks `op_type == 'conv2d'` literally will need the equivalent `conv1d` branch added.
+- INT8 BatchNorm1d is **not** added — BN stays in float per the user's directive.
 
 ## Testing
 
@@ -91,7 +96,8 @@ For each new op, mirror the existing test pattern under `Tiny-NN-in-C/test/`:
 
 ## Out of scope
 
-- INT8 / W8A8 paths for the new ops (follow-up).
+- INT8 paths for BatchNorm1d (BN always float).
+- INT16 paths for any new op (mirror later if needed).
 - Any RNN / recurrent support (explicitly excluded by user).
 - Changes to NHWC layout convention.
 - Optimizing the 1D paths beyond the H=1 wrapper (wrappers may be 1–2× slower than dedicated NLC kernels; acceptable for v1).
