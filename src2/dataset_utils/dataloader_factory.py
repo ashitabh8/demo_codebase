@@ -10,11 +10,13 @@ import logging
 from dataset_utils.loaders import legacy_multiclass_loader
 from dataset_utils.loaders import multilabel_distance_loader
 from dataset_utils.loaders import single_label_loader
+from dataset_utils.loaders import single_label_seismic_loader
 
 _BUILDERS = {
     "legacy_multiclass": legacy_multiclass_loader.create_dataloaders,
     "multilabel_distance": multilabel_distance_loader.create_dataloaders,
     "single_label_only": single_label_loader.create_dataloaders,
+    "single_label_seismic_only": single_label_seismic_loader.create_dataloaders,
 }
 
 

@@ -53,6 +53,8 @@ class AugmenterConfig:
             "mixup", "scaling", "permutation", "negation", "horizontal_flip", "channel_shuffle",
             "time_warp", "mag_warp", "MissModalityGenerator", "specmix", "num_sensors",
             "preprocess_mode", "mel_bins", "mel_fmin", "mel_fmax", "sample_rate", "n_fft",
+            "input_sample_rate", "downsample_modalities",
+            "loc_mod_in_time_channels", "audio_channel_index",
         )
         for key in _augmenter_config_keys:
             if key in config:
@@ -61,6 +63,11 @@ class AugmenterConfig:
         # Experiment-level preprocess_mode overrides top-level default
         if "preprocess_mode" in experiment_config:
             self.dataset_config["preprocess_mode"] = experiment_config["preprocess_mode"]
+
+        if "audio_channel_index" in experiment_config:
+            self.dataset_config["audio_channel_index"] = experiment_config[
+                "audio_channel_index"
+            ]
 
         # When using mel preprocessing, freq augmenters see mel_bins not raw spectrum_len.
         # Override loc_mod_spectrum_len so FreqMaskAugmenter computes correct band widths.

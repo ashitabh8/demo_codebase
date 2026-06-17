@@ -97,7 +97,17 @@ Examples:
         default=0,
         help='GPU ID to use for testing (-1 for CPU, default: 0)'
     )
-    
+
+    parser.add_argument(
+        '--augmentation_mode',
+        type=str,
+        default='no',
+        choices=['no', 'fixed', 'random'],
+        help='Augmenter mode used on the test/val data '
+             '("no" = clean FFT/mel only, "fixed" = apply configured fixed augs, '
+             '"random" = apply random augmenter). Default: "no".'
+    )
+
     args = parser.parse_args()
     
     return args
@@ -151,6 +161,12 @@ def get_config():
     config['yaml_path'] = args.yaml_path
     config['device'] = 'cpu' if args.gpu < 0 else f'cuda:{args.gpu}'
     config['include_classes'] = args.include_classes
-    
+    if config['include_classes'] is None:
+        experiments = config['experiments']
+        if args.experiment_name in experiments:
+            experiment_config = experiments[args.experiment_name]
+            if 'include_classes' in experiment_config:
+                config['include_classes'] = experiment_config['include_classes']
+
     return config
 

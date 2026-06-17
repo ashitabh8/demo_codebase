@@ -20,6 +20,7 @@ from dataset_utils.multimodal_core import (
     balance_background_indices,
     build_multilabel_distance_target,
     flatten_distance_map,
+    normalize_sample_data_layout,
     present_class_names_from_label,
     resolve_balance_background,
     single_label_to_class_index_tensor,
@@ -38,23 +39,64 @@ _resolve_balance_background = resolve_balance_background
 class PretrainDataset(Dataset):
     """
     Dataset for SSL pretraining. Returns (data, label, idx).
-    label is extracted from sample['label'] via .item() for use in visualization only.
-    Labels are never used in the SSL loss computation.
+    label is converted to a class index for visualization only (not used in NT-Xent).
+    Supports ACIDS flat dict labels via label_subkey + class_names.
     """
 
-    def __init__(self, sample_paths):
+    def __init__(
+        self,
+        sample_paths,
+        location_names=None,
+        loc_modalities=None,
+        label_subkey=None,
+        class_names=None,
+    ):
         self.sample_files = sample_paths
+        self.location_names = (
+            list(location_names) if location_names is not None else None
+        )
+        self.loc_modalities = loc_modalities
+        self.label_subkey = label_subkey
+        self.class_names = (
+            list(class_names) if class_names is not None else None
+        )
+
+    def _label_for_viz(self, sample, sample_path):
+        if "label" not in sample:
+            return torch.tensor(0, dtype=torch.long)
+        lab = sample["label"]
+        if isinstance(lab, dict):
+            if "label" in lab:
+                raw = lab["label"]
+            elif self.label_subkey is not None:
+                if self.label_subkey not in lab:
+                    raise KeyError(
+                        f"sample['label'] has no key {self.label_subkey!r} in {sample_path}. "
+                        f"Available: {list(lab.keys())}"
+                    )
+                raw = lab[self.label_subkey]
+            else:
+                return torch.tensor(0, dtype=torch.long)
+            if self.class_names is not None:
+                return single_label_to_class_index_tensor(raw, self.class_names)
+            return torch.tensor(0, dtype=torch.long)
+        if isinstance(lab, torch.Tensor):
+            if lab.ndim == 0 or lab.numel() == 1:
+                return torch.tensor(int(lab.reshape(-1)[0].item()), dtype=torch.long)
+            return torch.tensor(0, dtype=torch.long)
+        return torch.tensor(int(lab), dtype=torch.long)
 
     def __len__(self):
         return len(self.sample_files)
 
     def __getitem__(self, idx):
-        sample = torch.load(self.sample_files[idx], weights_only=False)
+        sample_path = self.sample_files[idx]
+        sample = torch.load(sample_path, weights_only=False)
+        normalize_sample_data_layout(
+            sample, self.location_names, self.loc_modalities
+        )
         data = sample["data"]
-        label = sample["label"]
-        if isinstance(label, torch.Tensor):
-            label = label.item()
-        label = torch.tensor(label, dtype=torch.long)
+        label = self._label_for_viz(sample, sample_path)
         return data, label, idx
 
 
@@ -111,7 +153,29 @@ def create_pretrain_dataloader(config):
         else:
             raise ValueError(f"Unknown pretrain_subset_mode: {subset_mode}")
 
-    dataset = PretrainDataset(all_paths)
+    loc_names = config["location_names"] if "location_names" in config else None
+    loc_mods = config["loc_modalities"] if "loc_modalities" in config else None
+    label_subkey = None
+    class_names = None
+    if "task_name" in config and config["task_name"] in config:
+        task_cfg = config[config["task_name"]]
+        if "label_subkey" in task_cfg:
+            label_subkey = task_cfg["label_subkey"]
+        if "class_names" in task_cfg:
+            class_names = task_cfg["class_names"]
+    elif "vehicle_classification" in config:
+        vc = config["vehicle_classification"]
+        if "label_subkey" in vc:
+            label_subkey = vc["label_subkey"]
+        if "class_names" in vc:
+            class_names = vc["class_names"]
+    dataset = PretrainDataset(
+        all_paths,
+        location_names=loc_names,
+        loc_modalities=loc_mods,
+        label_subkey=label_subkey,
+        class_names=class_names,
+    )
     loader = DataLoader(
         dataset,
         batch_size=batch_size,

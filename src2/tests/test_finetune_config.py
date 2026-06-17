@@ -71,3 +71,43 @@ def test_validate_finetune_config_bce_multilabel_requires_best_metric(tmp_path):
     config = _base_finetune_config(checkpoint_path, loss_name="bce_multilabel")
     with pytest.raises(ValueError, match="multilabel_best_metric"):
         validate_finetune_config(config)
+
+
+def test_validate_finetune_config_no_checkpoint_random_init(tmp_path):
+    ck = tmp_path / "model_only.pth"
+    torch.save({"model_state_dict": {}}, ck)
+
+    config = _base_finetune_config(ck, loss_name="cross_entropy")
+    config["experiments"]["finetune_exp"]["checkpoint_path"] = ""
+    config["models"]["student_audio_deepsense_dw_large_mel"]["checkpoint_path"] = ""
+    config["training_configs"]["finetune_cfg"]["freeze_backbone"] = False
+
+    _, _, _, _, _, resolved, _ = validate_finetune_config(config)
+    assert resolved is None
+
+
+def test_validate_finetune_config_rejects_freeze_without_checkpoint(tmp_path):
+    ck = tmp_path / "unused.pth"
+    torch.save({"model_state_dict": {}}, ck)
+
+    config = _base_finetune_config(ck, loss_name="cross_entropy")
+    config["experiments"]["finetune_exp"]["checkpoint_path"] = ""
+    config["models"]["student_audio_deepsense_dw_large_mel"]["checkpoint_path"] = ""
+    config["training_configs"]["finetune_cfg"]["freeze_backbone"] = True
+
+    with pytest.raises(ValueError, match="freeze_backbone is True"):
+        validate_finetune_config(config)
+
+
+def test_validate_finetune_config_falls_back_to_model_checkpoint(tmp_path):
+    exp_ck = tmp_path / "from_model.pth"
+    torch.save({"model_state_dict": {}}, exp_ck)
+
+    config = _base_finetune_config(exp_ck, loss_name="cross_entropy")
+    config["experiments"]["finetune_exp"]["checkpoint_path"] = ""
+    config["models"]["student_audio_deepsense_dw_large_mel"][
+        "checkpoint_path"
+    ] = str(exp_ck)
+
+    _, _, _, _, _, resolved, _ = validate_finetune_config(config)
+    assert resolved == str(exp_ck.resolve())

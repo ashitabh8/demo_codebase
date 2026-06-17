@@ -1,0 +1,33 @@
+====================================================================
+CROSS-DAY SHIFT SUMMARY
+====================================================================
+
+── Class balance ─────────────────────────────────────────────
+  polaris               Day1:  120   Day2:  120
+  truck                 Day1:  120   Day2:  120
+  warthog               Day1:  120   Day2:  120
+
+── RMS (dBFS) ─────────────────────────────────────────
+  Day1  mean=+50.35  std=9.20  median=+48.85
+  Day2  mean=+52.76  std=8.16  median=+51.49
+  Δ mean = +2.42 dB
+
+── Dyn range (dB) ─────────────────────────────────────────
+  Day1  mean=+34.69  std=3.36  median=+34.43
+  Day2  mean=+34.12  std=2.55  median=+34.11
+  Δ mean = -0.57 dB
+
+── Clip rate (all classes, clip mean) ─────────────────────────
+  Day1 mean clip_rate: 0.9981   Day2: 0.9987
+  Δ (D2−D1): +0.0006  (high → possible gain / limiting)
+
+── Envelope peak position (0=front, 1=tail) ─────────────────
+  Day1 mean peak_rel: 0.402   Day2: 0.442
+
+── Linear subband energy (corpus mean fraction) ──────────────
+  sb_2000_4000:  D1=0.018  D2=0.015  Δ=-0.002
+  sb_20_500:  D1=0.723  D2=0.720  Δ=-0.003
+  sb_4000_8000:  D1=0.002  D2=0.004  Δ=+0.002
+  sb_500_2000:  D1=0.257  D2=0.261  Δ=+0.004
+
+====================================================================

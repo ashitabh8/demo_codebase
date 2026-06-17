@@ -60,7 +60,14 @@ def create_dataloaders(config, task_config, dl_cfg):
         "distance_key": str(dl_cfg["distance_key"]),
     }
 
-    train_ds, val_ds, test_ds = make_multimodal_triple(task_config, ds_kw)
+    loc_names = config["location_names"] if "location_names" in config else None
+    loc_mods = config["loc_modalities"] if "loc_modalities" in config else None
+    train_ds, val_ds, test_ds = make_multimodal_triple(
+        task_config,
+        ds_kw,
+        location_names=loc_names,
+        loc_modalities=loc_mods,
+    )
 
     if resolve_balance_background(config):
         kept = balance_background_indices(train_ds)

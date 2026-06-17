@@ -20,6 +20,8 @@ from .PhaseShiftAugmenter import PhaseShiftAugmenter
 from .BandLimitedNoiseAugmenter import BandLimitedNoiseAugmenter
 from .AudioNoiseAugmenter import AudioNoiseAugmenter
 from .mel_preprocess import MelPreprocessor
+from .audio_downsample import AudioDownsampler
+from .audio_channel_select import select_audio_channel
 
 
 class Augmenter:
@@ -43,15 +45,64 @@ class Augmenter:
             raise ValueError(f"Invalid preprocess_mode: {preprocess_mode}")
         
         self.preprocess_mode = preprocess_mode
+        effective_sr = args.dataset_config.get("sample_rate", 16000)
+        input_sr = args.dataset_config.get("input_sample_rate", effective_sr)
+        if input_sr != effective_sr:
+            downsample_modalities = args.dataset_config.get(
+                "downsample_modalities", ["audio"]
+            )
+            self.audio_downsampler = AudioDownsampler(
+                input_sr=input_sr,
+                target_sr=effective_sr,
+                target_modalities=downsample_modalities,
+                device=args.device,
+            )
+            if preprocess_mode == "mel":
+                mel_fmax = args.dataset_config.get("mel_fmax", 8000.0)
+                nyquist = effective_sr / 2
+                if mel_fmax > nyquist:
+                    raise ValueError(
+                        f"mel_fmax ({mel_fmax}) exceeds Nyquist ({nyquist}) for "
+                        f"sample_rate ({effective_sr}) after downsampling"
+                    )
         if preprocess_mode == "mel":
             self.mel_preprocessor = MelPreprocessor(
                 n_fft=args.dataset_config.get("n_fft", 1600),
                 n_mel=args.dataset_config.get("mel_bins", 80),
                 fmin=args.dataset_config.get("mel_fmin", 20.0),
                 fmax=args.dataset_config.get("mel_fmax", 8000.0),
-                sample_rate=args.dataset_config.get("sample_rate", 16000),
+                sample_rate=effective_sr,
                 device=args.device,
             )
+
+        self.audio_channel_index = None
+        if "audio_channel_index" in args.dataset_config:
+            self.audio_channel_index = int(args.dataset_config["audio_channel_index"])
+            loc = args.dataset_config["location_names"][0]
+            n_ch = args.dataset_config.get("loc_mod_in_time_channels", {}).get(
+                loc, {}
+            ).get("audio", 3)
+            if self.audio_channel_index < 0 or self.audio_channel_index >= n_ch:
+                raise ValueError(
+                    f"audio_channel_index ({self.audio_channel_index}) out of range "
+                    f"for {n_ch} audio channels"
+                )
+            logging.info(
+                "Audio channel selection enabled: using channel %d of %d",
+                self.audio_channel_index,
+                n_ch,
+            )
+            self._audio_num_channels = n_ch
+
+    def _apply_audio_channel_select(self, time_loc_inputs):
+        if self.audio_channel_index is None:
+            return time_loc_inputs
+        return select_audio_channel(
+            time_loc_inputs,
+            self.audio_channel_index,
+            target_modality="audio",
+            num_channels=self._audio_num_channels,
+        )
 
     def forward(self, option, time_loc_inputs, labels=None, return_aug_id=False, return_aug_mods=False):
         """General interface for the forward function."""
@@ -59,6 +110,8 @@ class Augmenter:
             for mod in time_loc_inputs[loc]:
                 if time_loc_inputs[loc][mod].dim() < 4:
                     time_loc_inputs[loc][mod] = time_loc_inputs[loc][mod].reshape(time_loc_inputs[loc][mod].shape[0], 1, self.args.dataset_config["num_segments"], -1)
+
+        time_loc_inputs = self._apply_audio_channel_select(time_loc_inputs)
 
         # move to target device
         time_loc_inputs, labels = self.move_to_target_device(time_loc_inputs, labels)
@@ -170,6 +223,8 @@ class Augmenter:
 
     def preprocess(self, time_loc_inputs):
         """Dispatch to mel or fft preprocessing based on preprocess_mode."""
+        if hasattr(self, "audio_downsampler"):
+            time_loc_inputs = self.audio_downsampler.downsample(time_loc_inputs)
         if self.preprocess_mode == "mel":
             return self.mel_preprocessor.preprocess(time_loc_inputs)
         else:
@@ -200,6 +255,8 @@ class Augmenter:
         """Move all components to the target device"""
         for augmenter in self.time_augmenters:
             augmenter.to(device)
+        if hasattr(self, "audio_downsampler"):
+            self.audio_downsampler.to(device)
         if self.preprocess_mode == "mel" and hasattr(self, 'mel_preprocessor'):
             self.mel_preprocessor.to(device)
 

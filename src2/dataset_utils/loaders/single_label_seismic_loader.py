@@ -1,4 +1,4 @@
-"""Single-label only: drop multi-label samples; map string labels to class indices."""
+"""Single-label seismic-only loader (copied from single_label_loader)."""
 
 import logging
 
@@ -11,23 +11,20 @@ from dataset_utils.loaders.loader_common import (
 def create_dataloaders(config, task_config, dl_cfg):
     """
     dl_cfg must contain:
-      type: single_label_only
+      type: single_label_seismic_only
 
     Task must set num_classes, class_names (non-empty list), and index files.
-
-    Optional task key label_subkey: when sample['label'] is a flat dict (no nested
-    'label' key), read the class label from sample['label'][label_subkey] (e.g.
-    vehicle_type for ACIDS vehicle classification).
     """
-    if dl_cfg["type"] != "single_label_only":
+    if dl_cfg["type"] != "single_label_seismic_only":
         raise ValueError(
-            f"single_label_loader expected type 'single_label_only', got {dl_cfg['type']!r}"
+            "single_label_seismic_loader expected type "
+            f"'single_label_seismic_only', got {dl_cfg['type']!r}"
         )
     if len(dl_cfg) != 1:
         extra = [k for k in dl_cfg if k != "type"]
         raise ValueError(
-            f"dataloader_configs entry for single_label_only must only contain 'type'; "
-            f"unexpected keys: {extra}"
+            "dataloader_configs entry for single_label_seismic_only must only "
+            f"contain 'type'; unexpected keys: {extra}"
         )
 
     if "num_classes" not in task_config:
@@ -35,16 +32,25 @@ def create_dataloaders(config, task_config, dl_cfg):
     cn = task_config["class_names"]
     if not isinstance(cn, list) or len(cn) == 0:
         raise ValueError(
-            "single_label_only requires non-empty class_names in the task config"
+            "single_label_seismic_only requires non-empty class_names in the task config"
         )
     nc = task_config["num_classes"]
     if nc != len(cn):
         raise ValueError(
             f"num_classes ({nc}) must equal len(class_names) ({len(cn)}) "
-            "for single_label_only"
+            "for single_label_seismic_only"
         )
 
-    logging.info("Creating datasets (single_label_only)...")
+    if "loc_modalities" not in config or "shake" not in config["loc_modalities"]:
+        raise ValueError(
+            "single_label_seismic_only requires config['loc_modalities']['shake']"
+        )
+    if "seismic" not in config["loc_modalities"]["shake"]:
+        raise ValueError(
+            "single_label_seismic_only requires 'seismic' in loc_modalities['shake']"
+        )
+
+    logging.info("Creating datasets (single_label_seismic_only)...")
     ds_kw = {
         "num_classes": nc,
         "multilabel_distance_targets": False,

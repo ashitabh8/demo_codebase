@@ -703,7 +703,35 @@ def load_checkpoint(model, checkpoint_path, device):
         model: Model with loaded weights
     """
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    model.load_state_dict(checkpoint['model_state_dict'])
+
+    if "model_state_dict" in checkpoint:
+        model.load_state_dict(checkpoint["model_state_dict"])
+    elif "model_state_dict_int8" in checkpoint and "weight_scales" in checkpoint:
+        # Dequantize packed int8 weights back to float tensors for evaluation.
+        # This preserves int8 quantization levels in storage while keeping the
+        # standard float model forward path unchanged.
+        qsd = checkpoint["model_state_dict_int8"]
+        scales = checkpoint["weight_scales"]
+        deq_sd = {}
+        for key, value in qsd.items():
+            if (
+                torch.is_tensor(value)
+                and value.dtype == torch.int8
+                and key in scales
+            ):
+                scale = float(scales[key])
+                deq_sd[key] = value.float() * scale
+            else:
+                deq_sd[key] = value
+        model.load_state_dict(deq_sd)
+        logging.info(
+            "Loaded int8-packed checkpoint format; dequantized to float for runtime"
+        )
+    else:
+        raise ValueError(
+            "Unsupported checkpoint format. Expected 'model_state_dict' or "
+            "('model_state_dict_int8' + 'weight_scales')."
+        )
     logging.info(f"Loaded checkpoint from: {checkpoint_path}")
     logging.info(f"  Epoch: {checkpoint.get('epoch', 'N/A')}")
     if 'val_acc' in checkpoint:
@@ -788,6 +816,58 @@ def calculate_macro_f1_from_confusion_matrix(cm: np.ndarray) -> float:
         f1s.append((2.0 * tp / denom) if denom > 0 else 0.0)
 
     return float(np.mean(f1s)) if f1s else 0.0
+
+
+def calculate_macro_precision_recall_from_confusion_matrix(cm: np.ndarray):
+    """Calculate macro precision and macro recall from a confusion matrix."""
+    if cm is None:
+        return 0.0, 0.0
+    cm = np.asarray(cm)
+    if cm.ndim != 2 or cm.shape[0] != cm.shape[1]:
+        raise ValueError(f"Confusion matrix must be square, got shape={cm.shape}")
+    num_classes = cm.shape[0]
+    if num_classes == 0:
+        return 0.0, 0.0
+
+    precisions = []
+    recalls = []
+    for i in range(num_classes):
+        tp = float(cm[i, i])
+        fp = float(cm[:, i].sum() - tp)
+        fn = float(cm[i, :].sum() - tp)
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        precisions.append(precision)
+        recalls.append(recall)
+
+    return float(np.mean(precisions)), float(np.mean(recalls))
+
+
+def resolve_single_label_selection_score(val_results, best_metric):
+    """Resolve checkpoint score for single-label model selection."""
+    if best_metric == "val_acc":
+        return float(val_results["accuracy"])
+    if best_metric == "f1_macro":
+        metric_value = val_results["f1_macro"]
+        return float(metric_value) if metric_value is not None else 0.0
+    if best_metric == "macro_precision":
+        metric_value = val_results["macro_precision"]
+        return float(metric_value) if metric_value is not None else 0.0
+    if best_metric == "macro_recall":
+        metric_value = val_results["macro_recall"]
+        return float(metric_value) if metric_value is not None else 0.0
+    if best_metric == "pr_macro_mean":
+        precision_value = val_results["macro_precision"]
+        recall_value = val_results["macro_recall"]
+        if precision_value is None:
+            precision_value = 0.0
+        if recall_value is None:
+            recall_value = 0.0
+        return (float(precision_value) + float(recall_value)) / 2.0
+    raise ValueError(
+        "single_label_best_metric must be one of "
+        "('val_acc', 'f1_macro', 'macro_precision', 'macro_recall', 'pr_macro_mean')"
+    )
 
 
 def log_confusion_matrix_table(cm, class_names, logger, title="Validation Confusion Matrix"):
@@ -915,6 +995,7 @@ def validate(model, val_loader, loss_fn, device, augmenter=None, apply_augmentat
             - 'predictions': list
             - 'labels': list
     """
+    # breakpoint()
     model.eval()
     val_loss = 0.0
     val_correct = 0
@@ -987,14 +1068,19 @@ def validate(model, val_loader, loss_fn, device, augmenter=None, apply_augmentat
 
     cm = None
     f1_macro = None
+    macro_precision = None
+    macro_recall = None
     if inferred_num_classes is not None and inferred_num_classes > 0 and len(all_val_preds) > 0:
         cm = calculate_confusion_matrix(all_val_preds, all_val_labels, inferred_num_classes)
         f1_macro = calculate_macro_f1_from_confusion_matrix(cm)
+        macro_precision, macro_recall = calculate_macro_precision_recall_from_confusion_matrix(cm)
     
     return {
         'loss': epoch_val_loss,
         'accuracy': epoch_val_acc,
         'f1_macro': f1_macro,
+        'macro_precision': macro_precision,
+        'macro_recall': macro_recall,
         'confusion_matrix': cm,
         'predictions': all_val_preds,
         'labels': all_val_labels
@@ -1475,9 +1561,12 @@ def validate_vanilla_supervised_contrastive(
 
     cm = None
     f1_macro = None
+    macro_precision = None
+    macro_recall = None
     if inferred_num_classes is not None and inferred_num_classes > 0 and len(all_val_preds) > 0:
         cm = calculate_confusion_matrix(all_val_preds, all_val_labels, inferred_num_classes)
         f1_macro = calculate_macro_f1_from_confusion_matrix(cm)
+        macro_precision, macro_recall = calculate_macro_precision_recall_from_confusion_matrix(cm)
 
     embedding_features = None
     embedding_labels = None
@@ -1495,6 +1584,8 @@ def validate_vanilla_supervised_contrastive(
         "loss": epoch_val_loss,
         "accuracy": epoch_val_acc,
         "f1_macro": f1_macro,
+        "macro_precision": macro_precision,
+        "macro_recall": macro_recall,
         "confusion_matrix": cm,
         "predictions": all_val_preds,
         "labels": all_val_labels,
@@ -1591,6 +1682,7 @@ def train(model, train_loader, val_loader, config, experiment_dir,
     class_names = task_cfg["class_names"]
 
     ml_best_metric = None
+    single_label_best_metric = "val_acc"
     if multilabel:
         ml_best_metric = training_config["multilabel_best_metric"]
         allowed_ml_metrics = ("val_loss", "mAP")
@@ -1598,6 +1690,20 @@ def train(model, train_loader, val_loader, config, experiment_dir,
             raise ValueError(
                 f"multilabel_best_metric must be one of {allowed_ml_metrics}, "
                 f"got '{ml_best_metric}'"
+            )
+    elif training_config is not None and "single_label_best_metric" in training_config:
+        single_label_best_metric = training_config["single_label_best_metric"]
+        allowed_single_label_metrics = (
+            "val_acc",
+            "f1_macro",
+            "macro_precision",
+            "macro_recall",
+            "pr_macro_mean",
+        )
+        if single_label_best_metric not in allowed_single_label_metrics:
+            raise ValueError(
+                "single_label_best_metric must be one of "
+                f"{allowed_single_label_metrics}, got '{single_label_best_metric}'"
             )
 
     # Training history
@@ -1625,6 +1731,8 @@ def train(model, train_loader, val_loader, config, experiment_dir,
     logger.info(f"Task (metrics): {_task_name}")
     if multilabel:
         logger.info(f"Multilabel BCE: best_metric={ml_best_metric}")
+    else:
+        logger.info(f"Single-label best metric: {single_label_best_metric}")
     logger.info(f"Experiment directory: {experiment_dir}")
     logger.info("=" * 80)
     
@@ -1770,7 +1878,10 @@ def train(model, train_loader, val_loader, config, experiment_dir,
             else:
                 raise ValueError(f"Unknown multilabel_best_metric: {ml_best_metric}")
         else:
-            _is_best_epoch = epoch_val_acc > best_val_acc
+            curr_sel = resolve_single_label_selection_score(
+                val_results, single_label_best_metric
+            )
+            _is_best_epoch = best_selection_score is None or curr_sel > best_selection_score
         log_epoch_to_claude(
             _claude_fh,
             epoch=epoch,
@@ -1792,6 +1903,14 @@ def train(model, train_loader, val_loader, config, experiment_dir,
         logger.info(f"  Val Loss: {epoch_val_loss:.4f}, Val Acc: {epoch_val_acc:.4f}")
         if multilabel:
             logger.info(f"  Val mAP: {val_results['mAP']:.4f}")
+        else:
+            macro_precision = val_results["macro_precision"]
+            macro_recall = val_results["macro_recall"]
+            if macro_precision is not None and macro_recall is not None:
+                logger.info(
+                    f"  Val Macro Precision: {macro_precision:.4f}, "
+                    f"Val Macro Recall: {macro_recall:.4f}"
+                )
         logger.info(f"  Learning Rate: {current_lr:.6f}")
         
         # TensorBoard logging
@@ -1799,6 +1918,13 @@ def train(model, train_loader, val_loader, config, experiment_dir,
         writer.add_scalar('Loss/val', epoch_val_loss, epoch)
         writer.add_scalar('Accuracy/train', epoch_train_acc, epoch)
         writer.add_scalar('Accuracy/val', epoch_val_acc, epoch)
+        if not multilabel:
+            macro_precision = val_results["macro_precision"]
+            macro_recall = val_results["macro_recall"]
+            if macro_precision is not None:
+                writer.add_scalar("Metrics/val_macro_precision", macro_precision, epoch)
+            if macro_recall is not None:
+                writer.add_scalar("Metrics/val_macro_recall", macro_recall, epoch)
         writer.add_scalar('Learning_Rate', current_lr, epoch)
         if multilabel:
             writer.add_scalar('Metrics/val_mAP', val_results['mAP'], epoch)
@@ -1839,7 +1965,8 @@ def train(model, train_loader, val_loader, config, experiment_dir,
                     f"  Best model saved! (metric={ml_best_metric}={curr_sel:.4f}, "
                     f"mAP={best_val_mAP:.4f}, loss={epoch_val_loss:.4f})"
                 )
-        elif epoch_val_acc > best_val_acc:
+        elif _is_best_epoch:
+            best_selection_score = curr_sel
             best_val_acc = epoch_val_acc
             best_val_f1 = val_results.get('f1_macro')
             best_epoch = epoch
@@ -1853,7 +1980,10 @@ def train(model, train_loader, val_loader, config, experiment_dir,
                 'val_loss': epoch_val_loss,
                 'config': config
             }, best_model_path)
-            logger.info(f"  Best model saved! (Val Acc: {best_val_acc:.4f})")
+            logger.info(
+                f"  Best model saved! ({single_label_best_metric}={curr_sel:.4f}, "
+                f"val_acc={best_val_acc:.4f})"
+            )
         
         # Save last epoch
         last_model_path = models_dir / "last_epoch.pth"
@@ -1877,7 +2007,9 @@ def train(model, train_loader, val_loader, config, experiment_dir,
         )
     else:
         logger.info(
-            f"Best validation accuracy: {best_val_acc:.4f} at epoch {best_epoch + 1}"
+            f"Best checkpoint at epoch {best_epoch + 1} "
+            f"(selected by {single_label_best_metric}={best_selection_score:.4f}, "
+            f"val_acc={best_val_acc:.4f})"
         )
     logger.info(f"Models saved to: {models_dir}")
     logger.info(f"TensorBoard logs: {tensorboard_dir}")
@@ -2030,12 +2162,29 @@ def train_vanilla_supervised_contrastive(
     best_val_f1 = None
     best_epoch = 0
     best_val_cm = None
+    best_selection_score = None
+    single_label_best_metric = "val_acc"
+    if training_config is not None and "single_label_best_metric" in training_config:
+        single_label_best_metric = training_config["single_label_best_metric"]
+    allowed_single_label_metrics = (
+        "val_acc",
+        "f1_macro",
+        "macro_precision",
+        "macro_recall",
+        "pr_macro_mean",
+    )
+    if single_label_best_metric not in allowed_single_label_metrics:
+        raise ValueError(
+            "single_label_best_metric must be one of "
+            f"{allowed_single_label_metrics}, got '{single_label_best_metric}'"
+        )
 
     logger.info("=" * 80)
     logger.info("Starting Training (vanilla_supervised_contrastive)")
     logger.info(f"Device: {device}")
     logger.info(f"Number of epochs: {num_epochs}")
     logger.info(f"Number of classes: {num_classes}")
+    logger.info(f"Single-label best metric: {single_label_best_metric}")
     logger.info(f"Experiment directory: {experiment_dir}")
     logger.info("=" * 80)
 
@@ -2164,8 +2313,11 @@ def train_vanilla_supervised_contrastive(
         if scheduler is not None:
             scheduler.step()
 
+        curr_sel = resolve_single_label_selection_score(
+            val_results, single_label_best_metric
+        )
         # Claude epoch log (before checkpoint block so is_best reflects pre-update state)
-        _is_best_epoch = epoch_val_acc > best_val_acc
+        _is_best_epoch = best_selection_score is None or curr_sel > best_selection_score
         log_epoch_to_claude(
             _claude_fh,
             epoch=epoch,
@@ -2182,12 +2334,23 @@ def train_vanilla_supervised_contrastive(
         logger.info(f"Epoch [{epoch+1}/{num_epochs}]")
         logger.info(f"  Train Loss: {epoch_train_loss:.4f}, Train Acc: {epoch_train_acc:.4f}")
         logger.info(f"  Val Loss: {epoch_val_loss:.4f}, Val Acc: {epoch_val_acc:.4f}")
+        macro_precision = val_results["macro_precision"]
+        macro_recall = val_results["macro_recall"]
+        if macro_precision is not None and macro_recall is not None:
+            logger.info(
+                f"  Val Macro Precision: {macro_precision:.4f}, "
+                f"Val Macro Recall: {macro_recall:.4f}"
+            )
         logger.info(f"  Learning Rate: {current_lr:.6f}")
 
         writer.add_scalar("Loss/train", epoch_train_loss, epoch)
         writer.add_scalar("Loss/val", epoch_val_loss, epoch)
         writer.add_scalar("Accuracy/train", epoch_train_acc, epoch)
         writer.add_scalar("Accuracy/val", epoch_val_acc, epoch)
+        if macro_precision is not None:
+            writer.add_scalar("Metrics/val_macro_precision", macro_precision, epoch)
+        if macro_recall is not None:
+            writer.add_scalar("Metrics/val_macro_recall", macro_recall, epoch)
         writer.add_scalar("Learning_Rate", current_lr, epoch)
 
         if (epoch + 1) % 5 == 0 or epoch == num_epochs - 1:
@@ -2226,7 +2389,8 @@ def train_vanilla_supervised_contrastive(
                     logger.info("  SupCon validation embedding t-SNE scatter logged to TensorBoard")
 
         # Save best model
-        if epoch_val_acc > best_val_acc:
+        if _is_best_epoch:
+            best_selection_score = curr_sel
             best_val_acc = epoch_val_acc
             best_val_f1 = val_results.get("f1_macro")
             best_epoch = epoch
@@ -2243,7 +2407,10 @@ def train_vanilla_supervised_contrastive(
                 },
                 best_model_path,
             )
-            logger.info(f"  Best model saved! (Val Acc: {best_val_acc:.4f})")
+            logger.info(
+                f"  Best model saved! ({single_label_best_metric}={curr_sel:.4f}, "
+                f"val_acc={best_val_acc:.4f})"
+            )
 
         last_model_path = models_dir / "last_epoch.pth"
         torch.save(
@@ -2260,7 +2427,11 @@ def train_vanilla_supervised_contrastive(
 
     logger.info("=" * 80)
     logger.info("Training Complete!")
-    logger.info(f"Best validation accuracy: {best_val_acc:.4f} at epoch {best_epoch + 1}")
+    logger.info(
+        f"Best checkpoint at epoch {best_epoch + 1} "
+        f"(selected by {single_label_best_metric}={best_selection_score:.4f}, "
+        f"val_acc={best_val_acc:.4f})"
+    )
     logger.info(f"Models saved to: {models_dir}")
     logger.info(f"TensorBoard logs: {tensorboard_dir}")
     logger.info("=" * 80)
@@ -2552,10 +2723,17 @@ def validate_pretrain_config(config):
 
 def validate_finetune_config(config):
     """
-    Validate config before supervised fine-tuning from a pretrained checkpoint.
+    Validate config before supervised fine-tuning.
 
-    Expects training_configs[..].type == "finetune", loss_name == "cross_entropy",
-    and a non-empty checkpoint path (training_config or model entry).
+    Expects training_configs[..].type == "finetune" and a supported loss_name.
+
+    Checkpoint resolution (first match wins):
+      1. experiments[..].checkpoint_path if non-empty after strip
+      2. Else models[<model>].checkpoint_path if present and non-empty after strip
+      3. Else no pretrained weights (random init from create_single_modal_model).
+
+    If no checkpoint is resolved, freeze_backbone must be false (freezing an
+    uninitialized backbone is rejected).
 
     Returns:
         tuple:
@@ -2564,7 +2742,7 @@ def validate_finetune_config(config):
             model_name,
             training_config_name,
             training_config,
-            resolved_checkpoint_path (str),
+            resolved_checkpoint_path (str or None),
             num_epochs (int),
     """
     experiment_name = config["experiment_name"]
@@ -2628,29 +2806,42 @@ def validate_finetune_config(config):
             "finetune training_config must set 'freeze_backbone' (true or false)"
         )
 
-    # breakpoint()
+    if "checkpoint_path" not in experiment_config:
+        raise ValueError(
+            f"Experiment '{experiment_name}' must define 'checkpoint_path' "
+            '(use an empty string \"\" to skip pretrained weights when '
+            "models[<model>]['checkpoint_path'] is also unset or empty)."
+        )
+
     tc_path = experiment_config["checkpoint_path"]
+    if tc_path is not None and not isinstance(tc_path, str):
+        raise ValueError(
+            f"experiment checkpoint_path must be a string or null, got {type(tc_path).__name__}"
+        )
+
+    checkpoint_path = None
     if isinstance(tc_path, str) and tc_path.strip():
         checkpoint_path = tc_path.strip()
     else:
         model_cfg = config["models"][model_name]
-        if "checkpoint_path" not in model_cfg:
-            raise ValueError(
-                "finetune requires checkpoint_path in training_config or "
-                f"config['models']['{model_name}']['checkpoint_path']"
-            )
-        mp = experiment_config["checkpoint_path"]
-        if not isinstance(mp, str) or not mp.strip():
-            raise ValueError(
-                "finetune checkpoint_path is empty in training_config and in "
-                f"models['{model_name}']['checkpoint_path']"
-            )
-        checkpoint_path = mp.strip()
+        if "checkpoint_path" in model_cfg:
+            mp = model_cfg["checkpoint_path"]
+            if isinstance(mp, str) and mp.strip():
+                checkpoint_path = mp.strip()
 
-    checkpoint_path = str(Path(checkpoint_path).expanduser())
-    if not os.path.isfile(checkpoint_path):
-        raise FileNotFoundError(
-            f"Finetune checkpoint not found: {checkpoint_path}"
+    if checkpoint_path is not None:
+        checkpoint_path = str(Path(checkpoint_path).expanduser())
+        if not os.path.isfile(checkpoint_path):
+            raise FileNotFoundError(
+                f"Finetune checkpoint not found: {checkpoint_path}"
+            )
+
+    if checkpoint_path is None and training_config["freeze_backbone"]:
+        raise ValueError(
+            "freeze_backbone is True but no pretrained checkpoint was resolved "
+            "(empty experiment checkpoint_path and empty or missing "
+            f"models['{model_name}']['checkpoint_path']). "
+            "Set freeze_backbone: false for from-scratch finetuning, or provide a .pth path."
         )
 
     num_epochs = training_config["epochs"]
@@ -2659,7 +2850,10 @@ def validate_finetune_config(config):
     logging.info(f"  experiment: {experiment_name}")
     logging.info(f"  model: {model_name}")
     logging.info(f"  training config: {training_config_name}")
-    logging.info(f"  checkpoint_path: {checkpoint_path}")
+    if checkpoint_path is None:
+        logging.info("  checkpoint_path: (none — random initialization)")
+    else:
+        logging.info(f"  checkpoint_path: {checkpoint_path}")
     logging.info(f"  freeze_backbone: {training_config['freeze_backbone']}")
     logging.info(f"  epochs: {num_epochs}")
 

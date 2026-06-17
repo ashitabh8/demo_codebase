@@ -181,9 +181,13 @@ def main():
     # ========================================================================
     # 9. Create Augmenter (disabled for deterministic evaluation)
     # ========================================================================
-    logging.info("\nCreating augmenter (test mode: disabled)...")
-    augmenter = create_augmenter(config, augmentation_mode="no", experiment_config=experiment_config)
-    logging.info("Augmenter created successfully (no augmentations will be applied)")
+    logging.info(f"\nCreating augmenter (mode={args.augmentation_mode})...")
+    augmenter = create_augmenter(
+        config, augmentation_mode=args.augmentation_mode, experiment_config=experiment_config
+    )
+    logging.info(
+        f"Augmenter created successfully (augmentation_mode={args.augmentation_mode})"
+    )
 
     # ========================================================================
     # 10. Create Model

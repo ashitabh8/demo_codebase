@@ -147,3 +147,6 @@ src2/experiments/*
 # But track the directory itself (if you want to keep the empty directory in git)
 !src2/experiments/.gitkeep
 .worktrees/
+
+# Web UI output for analyze_data_web.py
+src2/train_test/analyze_web_runs/

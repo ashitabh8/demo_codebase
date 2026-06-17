@@ -29,7 +29,8 @@ class CrossEntropyLossForDictOutput(nn.Module):
     Hardcoded to use CrossEntropyLoss - designed specifically for distillation training.
     
     Args:
-        None - uses default CrossEntropyLoss settings
+        class_weights: Optional list of length C (same order as class indices). Passed
+            through training_config['ce_class_weights'] via get_loss_function.
     
     Forward Args:
         model_output: Either a tensor (B, num_classes) or dict with 'logits' key
@@ -44,18 +45,25 @@ class CrossEntropyLossForDictOutput(nn.Module):
         >>> labels = torch.randint(0, 10, (32,))
         >>> loss = loss_fn(outputs, labels)
     """
-    def __init__(self):
+    def __init__(self, class_weights=None):
         super().__init__()
-        self.ce_loss = nn.CrossEntropyLoss()
-    
+        self.class_weights = class_weights
+
     def forward(self, model_output, target):
         # Extract logits if output is a dictionary
         if isinstance(model_output, dict):
             logits = model_output['logits']
         else:
             logits = model_output
-        
-        return self.ce_loss(logits, target)
+
+        weight = None
+        if self.class_weights is not None:
+            weight = torch.tensor(
+                self.class_weights,
+                device=logits.device,
+                dtype=logits.dtype,
+            )
+        return F.cross_entropy(logits, target, weight=weight)
 
 
 class BCEWithLogitsMultilabelForDictOutput(nn.Module):
@@ -247,13 +255,25 @@ def get_loss_function(training_config):
 
     # Create loss function based on name
     if loss_name == "cross_entropy":
+        ce_w = None
+        if "ce_class_weights" in training_config:
+            ce_w = training_config["ce_class_weights"]
+            if not isinstance(ce_w, list):
+                raise ValueError("ce_class_weights must be a list of length C")
+            logging.info(f"  CE class weights (len={len(ce_w)}): {ce_w}")
         logging.info("  Using CrossEntropyLossForDictOutput (handles dict model outputs)")
-        return CrossEntropyLossForDictOutput(), loss_name
+        return CrossEntropyLossForDictOutput(class_weights=ce_w), loss_name
 
     if loss_name == "ce_supcon":
         # Supervised contrastive learning on embeddings with CE on logits.
         temperature = float(training_config.get("supcon_temperature", 0.07))
         supcon_weight = float(training_config.get("supcon_weight", 1.0))
+        ce_w = None
+        if "ce_class_weights" in training_config:
+            ce_w = training_config["ce_class_weights"]
+            if not isinstance(ce_w, list):
+                raise ValueError("ce_class_weights must be a list of length C")
+            logging.info(f"  CE class weights (len={len(ce_w)}): {ce_w}")
         logging.info(
             "  Using CrossEntropyPlusSupConLoss "
             f"(temperature={temperature}, supcon_weight={supcon_weight})"
@@ -261,6 +281,7 @@ def get_loss_function(training_config):
         return CrossEntropyPlusSupConLoss(
             temperature=temperature,
             supcon_weight=supcon_weight,
+            class_weights=ce_w,
         ), loss_name
 
     if loss_name == "nt_xent":
@@ -308,11 +329,25 @@ class CrossEntropyPlusSupConLoss(nn.Module):
     (SupCon term is not computed because there is only one view).
     """
 
-    def __init__(self, temperature: float = 0.07, supcon_weight: float = 1.0):
+    def __init__(
+        self,
+        temperature: float = 0.07,
+        supcon_weight: float = 1.0,
+        class_weights=None,
+    ):
         super().__init__()
         self.temperature = temperature
         self.supcon_weight = supcon_weight
-        self.ce_loss = nn.CrossEntropyLoss()
+        self.class_weights = class_weights
+
+    def _ce_weight_tensor(self, logits):
+        if self.class_weights is None:
+            return None
+        return torch.tensor(
+            self.class_weights,
+            device=logits.device,
+            dtype=logits.dtype,
+        )
 
     def _extract_logits_and_features(self, outputs):
         if isinstance(outputs, dict):
@@ -387,13 +422,19 @@ class CrossEntropyPlusSupConLoss(nn.Module):
             logits1, features1 = self._extract_logits_and_features(out1)
             logits2, features2 = self._extract_logits_and_features(out2)
 
-            ce = 0.5 * (self.ce_loss(logits1, target) + self.ce_loss(logits2, target))
+            w1 = self._ce_weight_tensor(logits1)
+            w2 = self._ce_weight_tensor(logits2)
+            ce = 0.5 * (
+                F.cross_entropy(logits1, target, weight=w1)
+                + F.cross_entropy(logits2, target, weight=w2)
+            )
             supcon = self._supcon_loss_two_views(features1, features2, target)
             return ce + self.supcon_weight * supcon
 
         # Testing mode: only one set of outputs => CE only.
         logits, _ = self._extract_logits_and_features(model_output)
-        return self.ce_loss(logits, target)
+        w = self._ce_weight_tensor(logits)
+        return F.cross_entropy(logits, target, weight=w)
 
 
 def convert_to_one_hot(labels, num_classes):

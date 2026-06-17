@@ -6,15 +6,28 @@ pretrain_index_file: /data/kara4/Parkland/time_data_partition/pretrain_index.txt
 # Set task_name: fine_tune_vehicle_classification (top-level or via experiment) to use this task.
 # Pick dataloader via experiments.<name>.dataloader -> dataloader_configs.<key>.type
 fine_tune_vehicle_classification:
-        num_classes: 7
-        class_names: ["polaris", "warthog", "truck", "motor", "tesla", "mustang", "walk"]
-        train_index_file: /data/kara4/Parkland/time_data_partition/train_index.txt
-        val_index_file: /data/kara4/Parkland/time_data_partition/val_index.txt
-        test_index_file: /data/kara4/Parkland/time_data_partition/test_index.txt
+        num_classes: 3
+        class_names: ["kona", "wagoneer", "background"]
+        train_index_file: /data/misra8/west_point_far_sample_dropped_15m/train.txt
+        val_index_file: /data/misra8/west_point_far_sample_dropped_15m/val.txt
+        test_index_file: /data/misra8/west_point_far_sample_dropped_15m/val.txt
+
+# 2-class vehicle-only task: drops any sample whose label is "background" so the
+# model never sees background during training or validation. The underlying index
+# files are shared with fine_tune_vehicle_classification; single_label_only
+# filtering in MultiModalDataset removes out-of-class_names samples at load time.
+fine_tune_vehicle_classification_binary:
+        num_classes: 2
+        class_names: ["kona", "wagoneer"]
+        train_index_file: /data/misra8/west_point_far_sample_dropped_15m/train.txt
+        val_index_file: /data/misra8/west_point_far_sample_dropped_15m/val.txt
+        test_index_file: /data/misra8/west_point_far_sample_dropped_15m/val.txt
 
 dataloader_configs:
         parkland_single_label:
                 type: single_label_only
+        westpoint_single_label_seismic:
+                type: single_label_seismic_only
         parkland_multilabel_distance:
                 type: multilabel_distance
                 distance_threshold_m: 10.0
@@ -22,13 +35,13 @@ dataloader_configs:
         parkland_legacy_multiclass:
                 type: legacy_multiclass
 
-# 7-class original config for reference:
+# 3-class West Point reference (same index layout as fine_tune_vehicle_classification):
 vehicle_classification:
-        num_classes: 7
-        class_names: ["Polaris", "Warhog", "Truck", "motor", "tesla", "mustang", "walk"]
-        train_index_file: /data/kara4/Parkland/time_data_partition/train_index.txt    
-        val_index_file: /data/kara4/Parkland/time_data_partition/val_index.txt
-        test_index_file: /data/kara4/Parkland/time_data_partition/test_index.txt
+        num_classes: 3
+        class_names: ["kona", "wagoneer", "background"]
+        train_index_file: /data/misra8/west_point/train.txt
+        val_index_file: /data/misra8/west_point/val.txt
+        test_index_file: /data/misra8/west_point/val.txt
 
 base_experiment_dir: /home/madhav5/demo_codebase/src2/experiments
 
@@ -74,41 +87,35 @@ normalization:
 
 # Preprocessing mode: "fft" (default) or "mel"
 # preprocess_mode: "fft"
-sample_rate: 16000
+sample_rate: 200
 n_fft: 1600
 mel_bins: 80
 mel_fmin: 20.0
 mel_fmax: 8000.0
 
 # Segments
-num_segments: 10
+num_segments: 5
 
 # Locations 
 num_locaiton: 1
 location_names: ["shake"]
 
-# Modality names
-num_sensors: 2
-modality_names: ["seismic", "audio"]
+# Modality names (geo/seismic-only setup for West Point geo+mic index files)
+num_sensors: 1
+modality_names: ["seismic"]
 
 # Location modalities
-loc_modalities: 
-        shake: ["seismic", "audio"]
+loc_modalities:
+        shake: ["seismic"]
 loc_mod_in_freq_channels:
         shake:
-                audio: 2
                 seismic: 2
-                acc: 6
 loc_mod_in_time_channels:
         shake:
-                audio: 1
                 seismic: 1
-                acc: 3
 loc_mod_spectrum_len:
         shake:
-                audio: 1600
-                seismic: 20
-                acc: 20
+                seismic: 80
 
 # For sequence-based contrastive learning 
 seq_len: 4
@@ -347,6 +354,30 @@ models:
                 proj_hidden_dim: 256
                 proj_out_dim: 128
 
+        student_geo_deepsense_dw:
+                model_source: "create_single_modal_model"
+                model_type: "deepsense_dw"
+                active_modality: "seismic"
+                # Overrides (decouple from dataset defaults)
+                in_channels: 2          # real+imag
+                in_spectrum_len: 80     # S
+                # Freq DW stack:
+                #   80 -> (80-5)//2+1 = 38
+                #   38 -> (38-3)//2+1 = 18
+                #   18 -> same (stride 1) = 18
+                channels_freq:     [32, 64, 128]
+                kernel_sizes_freq: [[1, 5], [1, 3], [1, 3]]
+                strides_freq:      [[1, 2], [1, 2], [1, 1]]
+                # Temporal DW stack over 5 intervals:
+                temporal_channels: 128
+                num_temporal_layers: 3   # receptive field 3+2+2 = 7 ≥ 5 intervals
+                temporal_kernel: 3
+                # Head
+                fc_dim: 128
+                dropout_ratio: 0.2
+                proj_hidden_dim: 128
+                proj_out_dim: 64
+
 # =============================================================================
 # Training Config Zoo: Reusable Training Recipes
 # =============================================================================
@@ -489,6 +520,85 @@ training_configs:
             warmup_epochs: 0
             decay_epochs: 5
             decay_rate: 0.5
+
+        # Seismic kona-vs-wagoneer binary classifier from scratch.
+        # - Drops background entirely via the 2-class task config; train is ~150/152.
+        # - CE loss, no SupCon, no class weights (nearly balanced already).
+        # - Balanced sampler handles the tiny skew.
+        finetune_ce_seismic_binary:
+                type: "finetune"
+                epochs: 100
+                loss_name: "cross_entropy"
+                freeze_backbone: False
+                single_label_best_metric: "pr_macro_mean"
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0003
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 5
+                        decay_epochs: 20
+                        decay_rate: 0.5
+
+        # Seismic-from-scratch CE-only finetune config.
+        # - No pretrained backbone -> freeze_backbone must be False, or nothing learns.
+        # - Balancing strategy: rely on the top-level balanced WeightedRandomSampler ONLY.
+        #   Do NOT stack ce_class_weights on top of it: batches are already ~33/33/33 so
+        #   any extra minority weight flips the model into "never predict background".
+        # - pr_macro_mean as selection metric so we don't checkpoint degenerate collapses.
+        finetune_ce_seismic_balanced:
+                type: "finetune"
+                epochs: 100
+                loss_name: "cross_entropy"
+                freeze_backbone: False
+                single_label_best_metric: "pr_macro_mean"
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0003
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 5
+                        decay_epochs: 20
+                        decay_rate: 0.5
+
+        # Seismic-from-scratch SupCon+CE binary finetune config.
+        # Mirrors finetune_ce_seismic_balanced's optimizer/scheduler but uses ce_supcon.
+        # - freeze_backbone False: backbone trains from scratch alongside the projection head.
+        # - No backbone_lr_scale: finetune_supcon_difflr's 0.1x scale only makes sense with
+        #   a pretrained backbone; from scratch we want the full LR on the backbone.
+        # - supcon_weight 1.0 as a neutral start. Raise to 2.0 if features look unseparated,
+        #   lower to 0.5 if CE accuracy is getting crowded out.
+        finetune_supcon_seismic_balanced:
+                type: "finetune"
+                epochs: 100
+                loss_name: "ce_supcon"
+                supcon_temperature: 0.07
+                supcon_weight: 1.0
+                freeze_backbone: False
+                single_label_best_metric: "pr_macro_mean"
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0003
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 5
+                        decay_epochs: 20
+                        decay_rate: 0.5
 
         finetune_supcon:
                 type: "finetune"
@@ -755,29 +865,72 @@ experiments:
                 checkpoint_path: "/home/madhav5/demo_codebase/src2/experiments/20260423_165622_pretrain_pretrain_audio_deepsense_dw_large_mel/models/best_pretrain_model.pth"
 
         finetune_audio_deepsense_dw_large_mel_supcon:
-                model: "student_audio_deepsense_dw_large_mel"
+                model: "student_geo_deepsense_dw"
                 training: "finetune_supcon"
                 task_name: fine_tune_vehicle_classification
-                dataloader: parkland_single_label
-                preprocess_mode: "mel"
+                dataloader: westpoint_single_label_seismic
+                preprocess_mode: "fft"
                 fixed_augmenters:
                         # time_augmenters: ["time_mask"]
                         # freq_augmenters: ["freq_mask"]
                         time_augmenters: ["scaling", "time_mask", "time_mask"]
                         freq_augmenters: ["freq_mask", "freq_mask"]
-                checkpoint_path: "/home/misra8/demo_codebase/src2/experiments/20260327_211014_pretrain_pretrain_audio_deepsense_dw_large_mel/models/best_pretrain_model.pth"
+                checkpoint_path: ""
 
         finetune_audio_deepsense_dw_large_mel_supcon_difflr:
-                model: "student_audio_deepsense_dw_large_mel"
+                model: "student_geo_deepsense_dw"
                 training: "finetune_supcon_difflr"
                 task_name: fine_tune_vehicle_classification
-                dataloader: parkland_single_label
-                preprocess_mode: "mel"
+                dataloader: westpoint_single_label_seismic
+                preprocess_mode: "fft"
                 balance_background: true
                 fixed_augmenters:
                         time_augmenters: ["scaling", "time_mask", "time_mask"]
                         freq_augmenters: ["freq_mask", "freq_mask"]
-                checkpoint_path: "/home/madhav5/demo_codebase/src2/experiments/20260424_024206_pretrain_pretrain_audio_deepsense_dw_large_mel/models/best_pretrain_model.pth"
+                checkpoint_path: ""
+
+        # Seismic BINARY kona-vs-wagoneer from scratch (no background).
+        finetune_seismic_ce_binary:
+                model: "student_geo_deepsense_dw"
+                training: "finetune_ce_seismic_binary"
+                task_name: fine_tune_vehicle_classification_binary
+                dataloader: westpoint_single_label_seismic
+                preprocess_mode: "fft"
+                # fixed_augmenters:
+                #         time_augmenters: ["scaling", "time_mask", "time_mask"]
+                #         freq_augmenters: ["freq_mask", "freq_mask"]
+                fixed_augmenters:
+                        time_augmenters: ["no"]
+                        freq_augmenters: ["no"]
+                checkpoint_path: ""
+
+        # Seismic-from-scratch CE-only baseline (no SupCon, no pretrain).
+        # Use this FIRST to establish class structure before trying SupCon again.
+        finetune_seismic_ce_balanced:
+                model: "student_geo_deepsense_dw"
+                training: "finetune_ce_seismic_balanced"
+                task_name: fine_tune_vehicle_classification_binary
+                dataloader: westpoint_single_label_seismic
+                preprocess_mode: "fft"
+                fixed_augmenters:
+                        time_augmenters: ["no"]
+                        freq_augmenters: ["no"]
+                checkpoint_path: ""
+
+        # Seismic-from-scratch SupCon+CE kona-vs-wagoneer binary classifier.
+        # SupCon draws two augmented views per sample, so fixed_augmenters MUST be
+        # stochastic (scaling + time_mask + freq_mask); with ["no"] both views collapse
+        # to the same tensor and the contrastive loss becomes degenerate.
+        finetune_seismic_supcon_balanced:
+                model: "student_geo_deepsense_dw"
+                training: "finetune_supcon_seismic_balanced"
+                task_name: fine_tune_vehicle_classification_binary
+                dataloader: westpoint_single_label_seismic
+                preprocess_mode: "fft"
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask", "freq_mask"]
+                checkpoint_path: ""
 
         finetune_audio_deepsense_dw_large_mel_w8a8:
                 model: "student_audio_deepsense_dw_large_mel_w8a8"
@@ -1146,7 +1299,7 @@ mixup:
         switch_prob: 0.75
         mode: 'random_batch'
         label_smoothing: 0
-        num_classes: 7
+        num_classes: 3
 
 jitter:
         std_in_percent: 0.2

@@ -118,9 +118,22 @@ def assemble_supervised_dataloaders(
     return train_loader, val_loader, test_loader
 
 
-def make_multimodal_triple(task_config, dataset_kwargs):
+def make_multimodal_triple(
+    task_config,
+    dataset_kwargs,
+    *,
+    location_names=None,
+    loc_modalities=None,
+):
     train_f, val_f, test_f = validate_task_index_files(task_config)
-    train_ds = MultiModalDataset(index_file=train_f, **dataset_kwargs)
-    val_ds = MultiModalDataset(index_file=val_f, **dataset_kwargs)
-    test_ds = MultiModalDataset(index_file=test_f, **dataset_kwargs)
+    kw = dict(dataset_kwargs)
+    if "label_subkey" in task_config:
+        kw["label_subkey"] = task_config["label_subkey"]
+    if location_names is not None:
+        kw["location_names"] = list(location_names)
+    if loc_modalities is not None:
+        kw["loc_modalities"] = loc_modalities
+    train_ds = MultiModalDataset(index_file=train_f, **kw)
+    val_ds = MultiModalDataset(index_file=val_f, **kw)
+    test_ds = MultiModalDataset(index_file=test_f, **kw)
     return train_ds, val_ds, test_ds

@@ -1,49 +1,96 @@
 # data paths  
-pretrain_index_file: /home/tkimura4/data/datasets/ACIDS/random_partition_index_vehicle_classification/train_index.txt 
+pretrain_index_file: /data/misra8/ACIDS/random_partition_index_vehicle_classification/train_index.txt 
 vehicle_classification:
         num_classes: 10 
         class_names: ["background", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
-        train_index_file: /home/tkimura4/data/datasets/ACIDS/random_partition_index_vehicle_classification/train_index.txt 
-        val_index_file: /home/tkimura4/data/datasets/ACIDS/random_partition_index_vehicle_classification/val_index.txt  
-        test_index_file: /home/tkimura4/data/datasets/ACIDS/random_partition_index_vehicle_classification/test_index.txt 
-        train_class_count_file: /home/tkimura4/data/datasets/ACIDS/random_partition_index_vehicle_classification/train_class_count.txt
+        # ACIDS .pt files store labels in sample['label'][label_subkey] (flat dict).
+        label_subkey: vehicle_type
+        train_index_file: /data/misra8/ACIDS/random_partition_index_vehicle_classification/train_index.txt 
+        val_index_file: /data/misra8/ACIDS/random_partition_index_vehicle_classification/val_index.txt  
+        test_index_file: /data/misra8/ACIDS/random_partition_index_vehicle_classification/test_index.txt 
+        train_class_count_file: /data/misra8/ACIDS/random_partition_index_vehicle_classification/train_class_count.txt
 
 dataloader_configs:
         acids_legacy_multiclass:
                 type: legacy_multiclass
+        acids_single_label:
+                type: single_label_only
+        # ACIDS .pt: sample['label'] dict with vehicle_type (not nested label['label'])
+        # label_subkey comes from the task block (e.g. vehicle_classification.label_subkey)
+        acids_vehicle:
+                type: single_label_only
 
 distance_classification:
         num_classes: 5
         class_names: ["5", "10", "25", "50", "75"]
-        train_index_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_distance_classification/train_index.txt 
-        val_index_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_distance_classification/val_index.txt  
-        test_index_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_distance_classification/test_index.txt 
-        train_class_count_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_distance_classification/train_class_count.txt
+        label_subkey: distance
+        train_index_file: /data/misra8/ACIDS/random_partition_index_distance_classification/train_index.txt 
+        val_index_file: /data/misra8/ACIDS/random_partition_index_distance_classification/val_index.txt  
+        test_index_file: /data/misra8/ACIDS/random_partition_index_distance_classification/test_index.txt 
+        train_class_count_file: /data/misra8/ACIDS/random_partition_index_distance_classification/train_class_count.txt
 speed_classification:
         num_classes: 7  
         class_names: ["1", "5", "10", "15", "20", "30", ">30"]
-        train_index_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_speed_classification/train_index.txt 
-        val_index_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_speed_classification/val_index.txt  
-        test_index_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_speed_classification/test_index.txt 
-        train_class_count_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_speed_classification/train_class_count.txt
+        label_subkey: speed
+        train_index_file: /data/misra8/ACIDS/random_partition_index_speed_classification/train_index.txt 
+        val_index_file: /data/misra8/ACIDS/random_partition_index_speed_classification/val_index.txt  
+        test_index_file: /data/misra8/ACIDS/random_partition_index_speed_classification/test_index.txt 
+        train_class_count_file: /data/misra8/ACIDS/random_partition_index_speed_classification/train_class_count.txt
 terrain_classification:
         num_classes: 3  
         class_names: ["desert", "arctic", "normal"]
-        train_index_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_terrain_classification/train_index.txt 
-        val_index_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_terrain_classification/val_index.txt  
-        test_index_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_terrain_classification/test_index.txt 
-        train_class_count_file: /data/sl29/home_sl29/data/ACIDS/random_partition_index_terrain_classification/train_class_count.txt
+        label_subkey: terrain
+        train_index_file: /data/misra8/ACIDS/random_partition_index_terrain_classification/train_index.txt 
+        val_index_file: /data/misra8/ACIDS/random_partition_index_terrain_classification/val_index.txt  
+        test_index_file: /data/misra8/ACIDS/random_partition_index_terrain_classification/test_index.txt 
+        train_class_count_file: /data/misra8/ACIDS/random_partition_index_terrain_classification/train_class_count.txt
 
 cross_entropy:
         name: "cross_entropy"
 
+label_smoothing_ce:
+        name: "label_smoothing_ce"
+        label_smoothing: 0.1
+
+kurtosis:
+        name: "kurtosis"
+        kurtosis_weight: 0.1
+        kurtosis_target: 1.8
+        kurtosis_eps: 1e-8
+
+importance_vector_loss:
+        name: "importance_vector_loss"
+        lambda_variance: 0.1
+        variance_metric: "loss" # Not used anymore
+        target_avg_bitwidth: 6.0
+        budget_coeff: 0.01
+
+loss_name: "cross_entropy"
+
 repetition: 3
 
+batch_size_pretrain: 256
 batch_size: 32
 num_workers: 4
 use_balanced_sampling: True
 
-base_experiment_dir: /home/misra8/demo_codebase/src2/experiments
+base_experiment_dir: /home/madhav5/demo_codebase/src2/experiments
+
+# Normalization
+# Options: "standard", "minmax", "maxabs", "none"
+# for DynamicQuantization only use "minmax" because it supports unsigned quantization,
+# so negative values are not supported
+normalization:
+        method: "minmax"  # Use MinMaxScaler (scale to range)
+        minmax_range: [0, 1]  # Only used when method is "minmax"
+
+# Preprocessing mode: "fft" (default) or "mel"
+input_sample_rate: 16000   # native .pt audio rate
+sample_rate: 1600          # effective rate after audio decimation
+n_fft: 160
+mel_bins: 80
+mel_fmin: 20.0
+mel_fmax: 800.0
 
 # Segments
 num_segments: 7
@@ -141,6 +188,236 @@ models:
                 dropout_ratio: 0.1
                 fc_dim: 64
 
+        # Audio-only DeepSense (small — 1 GRU layer)
+        student_audio_deepsense_small:
+                model_source: "create_single_modal_model"
+                model_type: "deepsense"
+                active_modality: "audio"
+                channels: [32, 64, 64]
+                kernel_sizes: [[1, 80], [1, 5], [1, 5]]
+                strides: [[1, 80], [1, 1], [1, 1]]
+                recurrent_dim: 64
+                recurrent_layers: 1
+                fc_dim: 128
+                dropout_ratio: 0.2
+                proj_hidden_dim: 256
+                proj_out_dim: 128
+
+        # Audio-only DeepSense (standard)
+        student_audio_deepsense:
+                model_source: "create_single_modal_model"
+                model_type: "deepsense"
+                active_modality: "audio"
+                channels: [64, 128, 128]
+                kernel_sizes: [[1, 80], [1, 5], [1, 5]]
+                strides: [[1, 80], [1, 1], [1, 1]]
+                recurrent_dim: 256
+                recurrent_layers: 2
+                fc_dim: 512
+                dropout_ratio: 0.2
+                proj_hidden_dim: 256
+                proj_out_dim: 128
+
+        # DeepSense DW ~200KB for ACIDS (256-bin FFT audio, 6 ch)
+        student_audio_deepsense_dw_tiny:
+                model_source: "create_single_modal_model"
+                model_type: "deepsense_dw"
+                active_modality: "audio"
+                channels_freq: [32, 64, 96]
+                kernel_sizes_freq: [[1, 8], [1, 5], [1, 3]]
+                strides_freq: [[1, 8], [1, 4], [1, 2]]
+                temporal_channels: 64
+                num_temporal_layers: 4
+                temporal_kernel: 3
+                fc_dim: 64
+                dropout_ratio: 0.15
+                proj_hidden_dim: 128
+                proj_out_dim: 64
+
+        # DeepSense DW simple backbone (tensor I/O, compiler-friendly). Train with
+        # experiment simple_model_training: true so the loop unpacks the batch dict.
+        student_audio_deepsense_dw_simple_tiny:
+                model_source: "create_single_modal_model"
+                model_type: "deepsense_dw_simple"
+                active_modality: "audio"
+                pretrain_mode: false
+                channels_freq: [32, 64, 96]
+                kernel_sizes_freq: [[1, 8], [1, 5], [1, 3]]
+                strides_freq: [[1, 8], [1, 4], [1, 2]]
+                temporal_channels: 64
+                num_temporal_layers: 4
+                temporal_kernel: 3
+                fc_dim: 64
+
+        # W8A8 QAT variant of student_audio_deepsense_dw_simple_tiny (FFT input).
+        student_audio_deepsense_dw_simple_tiny_w8a8:
+                model_source: "create_single_modal_model"
+                model_type: "deepsense_dw_simple"
+                active_modality: "audio"
+                pretrain_mode: false
+                channels_freq: [32, 64, 96]
+                kernel_sizes_freq: [[1, 8], [1, 5], [1, 3]]
+                strides_freq: [[1, 8], [1, 4], [1, 2]]
+                temporal_channels: 64
+                num_temporal_layers: 4
+                temporal_kernel: 3
+                fc_dim: 64
+                w8a8: true
+
+        # W8A8 QAT variant of student_audio_deepsense_dw_tiny (FFT input).
+        student_audio_deepsense_dw_tiny_w8a8:
+                model_source: "create_single_modal_model"
+                model_type: "deepsense_dw"
+                active_modality: "audio"
+                channels_freq: [32, 64, 96]
+                kernel_sizes_freq: [[1, 8], [1, 5], [1, 3]]
+                strides_freq: [[1, 8], [1, 4], [1, 2]]
+                temporal_channels: 64
+                num_temporal_layers: 4
+                temporal_kernel: 3
+                fc_dim: 64
+                dropout_ratio: 0.15
+                proj_hidden_dim: 128
+                proj_out_dim: 64
+                w8a8: true
+
+        # W8A16 QAT variant of student_audio_deepsense_dw_tiny (FFT input).
+        student_audio_deepsense_dw_tiny_w8a16:
+                model_source: "create_single_modal_model"
+                model_type: "deepsense_dw"
+                active_modality: "audio"
+                channels_freq: [32, 64, 96]
+                kernel_sizes_freq: [[1, 8], [1, 5], [1, 3]]
+                strides_freq: [[1, 8], [1, 4], [1, 2]]
+                temporal_channels: 64
+                num_temporal_layers: 4
+                temporal_kernel: 3
+                fc_dim: 64
+                dropout_ratio: 0.15
+                proj_hidden_dim: 128
+                proj_out_dim: 64
+                w8a16: true
+
+        student_audio_deepsense_dw_large_mel:
+                model_source: "create_single_modal_model"
+                model_type: "deepsense_dw"
+                active_modality: "audio"
+                # MelPreprocessor keeps C; ACIDS shake audio is 3 ch (loc_mod_in_time_channels).
+                in_channels: 3
+                in_spectrum_len: 80  # 80 Mel bins
+                # ~200 KB float32 weights (51,694 params); spectrum_proj dominates size.
+                channels_freq:     [22, 32, 43, 43, 43]
+                kernel_sizes_freq: [[1, 5], [1, 3], [1, 3], [1, 3], [1, 3]]
+                strides_freq:      [[1, 2], [1, 2], [1, 1], [1, 1], [1, 1]]
+                temporal_channels: 42
+                num_temporal_layers: 5
+                temporal_kernel: 3
+                fc_dim: 42
+                dropout_ratio: 0.35
+                proj_hidden_dim: 42
+                proj_out_dim: 128
+                pretrain_mode: false
+
+        # Single-mic variant: use with experiments.audio_channel_index (0/1/2).
+        student_audio_deepsense_dw_large_mel_1ch:
+                model_source: "create_single_modal_model"
+                model_type: "deepsense_dw"
+                active_modality: "audio"
+                in_channels: 1
+                in_spectrum_len: 80
+                channels_freq:     [22, 32, 43, 43, 43]
+                kernel_sizes_freq: [[1, 5], [1, 3], [1, 3], [1, 3], [1, 3]]
+                strides_freq:      [[1, 2], [1, 2], [1, 1], [1, 1], [1, 1]]
+                temporal_channels: 42
+                num_temporal_layers: 5
+                temporal_kernel: 3
+                fc_dim: 42
+                dropout_ratio: 0.35
+                proj_hidden_dim: 42
+                proj_out_dim: 128
+                pretrain_mode: false
+
+        # W8A8 QAT variant of student_audio_deepsense_dw_large_mel.
+        # Identical architecture; depthwise-separable conv layers replaced
+        # with QuantDWConv2d/QuantDWConv1d using INT8 weights + INT8 activations.
+        # Workflow: pretrain (or load float32 checkpoint) -> calibrate -> QAT finetune.
+        student_audio_deepsense_dw_large_mel_w8a8:
+                model_source: "create_single_modal_model"
+                model_type: "deepsense_dw"
+                active_modality: "audio"
+                in_channels: 3
+                in_spectrum_len: 80
+                channels_freq:     [128, 256, 512, 512, 512]
+                kernel_sizes_freq: [[1, 5], [1, 3], [1, 3], [1, 3], [1, 3]]
+                strides_freq:      [[1, 2], [1, 2], [1, 1], [1, 1], [1, 1]]
+                temporal_channels: 512
+                num_temporal_layers: 6
+                temporal_kernel: 3
+                fc_dim: 512
+                dropout_ratio: 0.35
+                proj_hidden_dim: 256
+                proj_out_dim: 128
+                w8a8: true
+
+        # W8A16 QAT variant — identical architecture to w8a8 but activations
+        # use INT16 range [-32768, 32767] instead of INT8 [-128, 127].
+        # Higher activation fidelity at the same INT8 weight compression.
+        student_audio_deepsense_dw_large_mel_w8a16:
+                model_source: "create_single_modal_model"
+                model_type: "deepsense_dw"
+                active_modality: "audio"
+                in_channels: 3
+                in_spectrum_len: 80
+                channels_freq:     [128, 256, 512, 512, 512]
+                kernel_sizes_freq: [[1, 5], [1, 3], [1, 3], [1, 3], [1, 3]]
+                strides_freq:      [[1, 2], [1, 2], [1, 1], [1, 1], [1, 1]]
+                temporal_channels: 512
+                num_temporal_layers: 6
+                temporal_kernel: 3
+                fc_dim: 512
+                dropout_ratio: 0.35
+                proj_hidden_dim: 256
+                proj_out_dim: 128
+                w8a16: true
+
+        student_audio_deepsense_dw_large_mel_bigru:
+                model_source: "create_single_modal_model"
+                model_type: "deepsense_dw"
+                active_modality: "audio"
+                in_channels: 3
+                in_spectrum_len: 80
+                channels_freq:     [128, 256, 512, 512, 512]
+                kernel_sizes_freq: [[1, 5], [1, 3], [1, 3], [1, 3], [1, 3]]
+                strides_freq:      [[1, 2], [1, 2], [1, 1], [1, 1], [1, 1]]
+                temporal_channels: 512
+                num_temporal_layers: 6
+                temporal_kernel: 3
+                use_bigru: True
+                recurrent_dim: 192
+                recurrent_layers: 2
+                output_dims: [512, 256]
+                fc_dim: 512
+                dropout_ratio: 0.35
+                proj_hidden_dim: 256
+                proj_out_dim: 128
+
+        student_audio_deepsense_dw_mel:
+                model_source: "create_single_modal_model"
+                model_type: "deepsense_dw"
+                active_modality: "audio"
+                in_channels: 3
+                in_spectrum_len: 80  # 80 Mel bins
+                channels_freq:     [64, 128, 256]
+                kernel_sizes_freq: [[1, 5], [1, 3], [1, 3]]
+                strides_freq:      [[1, 2], [1, 2], [1, 1]]
+                temporal_channels: 256
+                num_temporal_layers: 4
+                temporal_kernel: 3
+                fc_dim: 512
+                dropout_ratio: 0.2
+                proj_hidden_dim: 256
+                proj_out_dim: 128
+
 
 # =============================================================================
 # Training Config Zoo: Reusable Training Recipes
@@ -153,6 +430,26 @@ training_configs:
                 type: "vanilla_supervised"
                 epochs: 50
                 loss_name: "cross_entropy"
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0001
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 0
+                        decay_epochs: 2
+                        decay_rate: 0.2
+
+        vanilla_supervised_contrastive:
+                type: "vanilla_supervised_contrastive"
+                epochs: 200
+                loss_name: "ce_supcon"
+                supcon_temperature: 0.07
+                supcon_weight: 1.0
                 optimizer:
                         name: "AdamW"
                         start_lr: 0.0001
@@ -223,6 +520,276 @@ training_configs:
                         warmup_prefix: True
                         warmup_epochs: 0
 
+        ssl_pretrain_ce:
+                type: "ssl_pretrain"
+                epochs: 50
+                loss_name: "nt_xent"
+                nt_xent_temperature: 0.2
+                pretrain_subset_ratio: 1.0
+                pretrain_subset_mode: "global"
+                pretrain_seed: 42
+                viz_every_n_epochs: 10
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0003
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 10
+                        decay_epochs: 2
+                        decay_rate: 0.2
+
+        finetune_ce:
+                type: "finetune"
+                epochs: 100
+                loss_name: "cross_entropy"
+                freeze_backbone: True
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0001
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 0
+                        decay_epochs: 5
+                        decay_rate: 0.5
+
+        # Same as finetune_ce but freeze_backbone: false — required when
+        # experiments[..].checkpoint_path is "" (random init, no .pth load).
+        finetune_ce_scratch:
+                type: "finetune"
+                epochs: 100
+                loss_name: "cross_entropy"
+                freeze_backbone: False
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0001
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 0
+                        decay_epochs: 5
+                        decay_rate: 0.5
+
+        # CE finetune with unfrozen backbone + differential LR (load from pretrain .pth).
+        finetune_ce_unfreeze:
+                type: "finetune"
+                epochs: 100
+                loss_name: "cross_entropy"
+                freeze_backbone: False
+                backbone_lr_scale: 0.1
+                single_label_best_metric: "f1_macro"
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0003
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.01
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 5
+                        decay_epochs: 5
+                        decay_rate: 0.5
+
+        finetune_supcon:
+                type: "finetune"
+                epochs: 100
+                loss_name: "ce_supcon"
+                supcon_temperature: 0.07
+                supcon_weight: 1.0
+                freeze_backbone: True
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0001
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 0
+                        decay_epochs: 5
+                        decay_rate: 0.5
+
+        # Same as finetune_supcon; selects best checkpoint by macro-F1 (5-class runs).
+        finetune_supcon_5class:
+                type: "finetune"
+                epochs: 100
+                loss_name: "ce_supcon"
+                supcon_temperature: 0.07
+                supcon_weight: 1.0
+                freeze_backbone: True
+                single_label_best_metric: "f1_macro"
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0001
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 0
+                        decay_epochs: 5
+                        decay_rate: 0.5
+
+        finetune_supcon_difflr:
+                type: "finetune"
+                epochs: 100
+                loss_name: "ce_supcon"
+                supcon_temperature: 0.07
+                supcon_weight: 1.0
+                freeze_backbone: True
+                backbone_lr_scale: 0.01
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0003
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 5
+                        decay_epochs: 5
+                        decay_rate: 0.5
+
+        # CE+SupCon finetune with unfrozen backbone + differential LR (load from pretrain .pth).
+        finetune_supcon_unfreeze:
+                type: "finetune"
+                epochs: 100
+                loss_name: "ce_supcon"
+                supcon_temperature: 0.07
+                supcon_weight: 1.0
+                freeze_backbone: False
+                backbone_lr_scale: 0.1
+                single_label_best_metric: "f1_macro"
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0003
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.01
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 5
+                        decay_epochs: 5
+                        decay_rate: 0.5
+
+        # Same as finetune_supcon_difflr but freeze_backbone: false — use with
+        # checkpoint_path: "" when training from random init (no .pth).
+        finetune_supcon_difflr_scratch:
+                type: "finetune"
+                epochs: 100
+                loss_name: "ce_supcon"
+                supcon_temperature: 0.07
+                supcon_weight: 1.0
+                freeze_backbone: False
+                backbone_lr_scale: 0.01
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0003
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 5
+                        decay_epochs: 5
+                        decay_rate: 0.5
+
+        # W8A8/W8A16 QAT finetuning config — tuned for Parkland 3-class mel models.
+        # Loads a float32 pretrained checkpoint, runs activation calibration
+        # automatically (w8a8_calib_batches), then trains with fake-quant active.
+        # Works for both w8a8 and w8a16 models — act_bits is read per layer.
+        # After training, best_model_quantized.pth is saved with int8 weights.
+        w8a8_qat_finetune:
+                type: "finetune"
+                epochs: 15
+                loss_name: "ce_supcon"
+                supcon_temperature: 0.07
+                supcon_weight: 1.0
+                freeze_backbone: False
+                backbone_lr_scale: 0.1
+                w8a8_calib_batches: 50
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.00003
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 1.0
+                        weight_decay: 0.05
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 5
+
+        # W8A8/W8A16 QAT finetuning config — tuned for ACIDS 10-class FFT models.
+        # Uses plain cross-entropy (no SupCon) for stable QAT recovery:
+        # SupCon loss with 10 classes and large FFT-domain activation magnitudes
+        # produces enormous loss values that overwhelm the quantization adaptation.
+        # LR and epochs match the float32 vanilla_supervised_contrastive baseline.
+        w8a8_qat_finetune_acids:
+                type: "finetune"
+                epochs: 50
+                loss_name: "cross_entropy"
+                freeze_backbone: False
+                backbone_lr_scale: 0.1
+                w8a8_calib_batches: 50
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0001
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 5
+
+        finetune_bce_multilabel_difflr:
+                type: "finetune"
+                epochs: 100
+                loss_name: "bce_multilabel"
+                multilabel_best_metric: "mAP" # "val_loss"
+                freeze_backbone: True
+                backbone_lr_scale: 0.01
+                optimizer:
+                        name: "AdamW"
+                        start_lr: 0.0003
+                        warmup_lr: 0.000001
+                        min_lr: 0.000001
+                        clip_grad: 5.0
+                        weight_decay: 0.05
+                lr_scheduler:
+                        name: "cosine"
+                        warmup_prefix: True
+                        warmup_epochs: 5
+                        decay_epochs: 5
+                        decay_rate: 0.5
+
 # =============================================================================
 # Experiments
 # =============================================================================
@@ -249,6 +816,426 @@ experiments:
                 training: "distill_resnet_to_convonly"
                 task_name: vehicle_classification
                 dataloader: acids_legacy_multiclass
+
+        # --- single_label_only + supervised contrastive (primary DeepSense DW tiny) ---
+        only_audio_deepsense_dw_tiny:
+                model: "student_audio_deepsense_dw_tiny"
+                training: "vanilla_supervised_contrastive"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                preprocess_mode: "fft"
+                fixed_augmenters:
+                        time_augmenters: ["time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
+        # DeepSense DW simple backbone + dict unpack in train (Tiny-NN-in-C path).
+        only_audio_deepsense_dw_simple_tiny:
+                model: "student_audio_deepsense_dw_simple_tiny"
+                training: "vanilla_supervised_ce"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                preprocess_mode: "fft"
+                simple_model_training: true
+                fixed_augmenters:
+                        time_augmenters: ["no"]
+                        freq_augmenters: ["no"]
+
+        # DeepSense DW simple backbone with supervised contrastive training.
+        only_audio_deepsense_dw_simple_tiny_supcon:
+                model: "student_audio_deepsense_dw_simple_tiny"
+                training: "vanilla_supervised_contrastive"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                preprocess_mode: "fft"
+                simple_model_training: true
+                fixed_augmenters:
+                        time_augmenters: ["no"]
+                        freq_augmenters: ["no"]
+
+        # W8A8 QAT finetune from compiler-friendly simple tiny checkpoint.
+        finetune_audio_deepsense_dw_simple_tiny_w8a8:
+                model: "student_audio_deepsense_dw_simple_tiny_w8a8"
+                training: "w8a8_qat_finetune_acids"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                preprocess_mode: "fft"
+                simple_model_training: true
+                fixed_augmenters:
+                        time_augmenters: ["no"]
+                        freq_augmenters: ["no"]
+                checkpoint_path: "/home/misra8/demo_codebase/src2/experiments/20260403_014025_only_audio_deepsense_dw_simple_tiny_supcon/models/best_model.pth"
+
+        # W8A8 QAT finetune from only_audio_deepsense_dw_tiny checkpoint.
+        # After training only_audio_deepsense_dw_tiny, set checkpoint_path to:
+        #   src2/experiments/<timestamp>_only_audio_deepsense_dw_tiny/models/best_model.pth
+        # Run: python finetune.py --experiment_name finetune_audio_deepsense_dw_tiny_w8a8 \
+        #          --yaml_path ../data/ACIDS.yaml --gpu 0
+        finetune_audio_deepsense_dw_tiny_w8a8:
+                model: "student_audio_deepsense_dw_tiny_w8a8"
+                training: "w8a8_qat_finetune_acids"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                preprocess_mode: "fft"
+                fixed_augmenters:
+                        time_augmenters: ["time_mask"]
+                        freq_augmenters: ["freq_mask"]
+                checkpoint_path: "/home/misra8/demo_codebase/src2/experiments/20260401_181117_only_audio_deepsense_dw_tiny/models/best_model.pth"
+
+        # W8A16 QAT finetune from only_audio_deepsense_dw_tiny checkpoint.
+        # Run: python finetune.py --experiment_name finetune_audio_deepsense_dw_tiny_w8a16 \
+        #          --yaml_path ../data/ACIDS.yaml --gpu 0
+        finetune_audio_deepsense_dw_tiny_w8a16:
+                model: "student_audio_deepsense_dw_tiny_w8a16"
+                training: "w8a8_qat_finetune_acids"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                preprocess_mode: "fft"
+                fixed_augmenters:
+                        time_augmenters: ["time_mask"]
+                        freq_augmenters: ["freq_mask"]
+                checkpoint_path: "/home/madhav5/demo_codebase/src2/experiments/20260401_192954_only_audio_deepsense_dw_tiny/models/best_model.pth"
+
+        only_audio_resnet18_single_label:
+                model: "student_audio_resnet"
+                training: "vanilla_supervised_ce"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                preprocess_mode: "fft"
+                fixed_augmenters:
+                        time_augmenters: ["no"]
+                        freq_augmenters: ["no"]
+
+        only_audio_resnet18_supcon:
+                model: "teacher_audio_resnet18"
+                training: "vanilla_supervised_contrastive"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                fixed_augmenters:
+                        time_augmenters: ["time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
+        cascade_stage1_single_label:
+                model: "student_audio_resnet"
+                training: "distill_resnet18_to_resnet"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                fixed_augmenters:
+                        time_augmenters: ["time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
+        cascade_stage2_single_label:
+                model: "student_audio_convonly"
+                training: "distill_resnet_to_convonly"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                fixed_augmenters:
+                        time_augmenters: ["time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
+        only_audio_deepsense_small:
+                model: "student_audio_deepsense_small"
+                training: "vanilla_supervised_ce"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                fixed_augmenters:
+                        time_augmenters: ["no"]
+                        freq_augmenters: ["no"]
+
+        only_audio_deepsense:
+                model: "student_audio_deepsense"
+                training: "vanilla_supervised_contrastive"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                fixed_augmenters:
+                        time_augmenters: ["time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
+        only_audio_deepsense_dw_mel:
+                model: "student_audio_deepsense_dw_mel"
+                training: "vanilla_supervised_contrastive"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                preprocess_mode: "mel"
+                fixed_augmenters:
+                        time_augmenters: ["time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
+        only_audio_deepsense_dw_large_mel:
+                model: "student_audio_deepsense_dw_large_mel"
+                training: "vanilla_supervised_contrastive"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                preprocess_mode: "mel"
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask", "freq_mask"]
+
+        pretrain_audio_resnet:
+                model: "teacher_audio_resnet18"
+                training: "ssl_pretrain_ce"
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
+        pretrain_audio_student_resnet:
+                model: "student_audio_resnet"
+                training: "ssl_pretrain_ce"
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "negation"]
+                        freq_augmenters: ["freq_mask", "phase_shift"]
+
+        pretrain_audio_deepsense_dw_large_mel:
+                model: "student_audio_deepsense_dw_large_mel"
+                training: "ssl_pretrain_ce"
+                preprocess_mode: "mel"
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
+        # Single-mic SSL pretrain (one channel of the 3-mic shake audio).
+        pretrain_audio_deepsense_dw_large_mel_1ch_ch0:
+                model: "student_audio_deepsense_dw_large_mel_1ch"
+                training: "ssl_pretrain_ce"
+                preprocess_mode: "mel"
+                audio_channel_index: 0
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
+        pretrain_audio_deepsense_dw_large_mel_1ch_ch1:
+                model: "student_audio_deepsense_dw_large_mel_1ch"
+                training: "ssl_pretrain_ce"
+                preprocess_mode: "mel"
+                audio_channel_index: 1
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
+        pretrain_audio_deepsense_dw_large_mel_1ch_ch2:
+                model: "student_audio_deepsense_dw_large_mel_1ch"
+                training: "ssl_pretrain_ce"
+                preprocess_mode: "mel"
+                audio_channel_index: 2
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
+        # 5-class CE+SupCon finetune, single mic, unfrozen backbone (one per channel).
+        finetune_audio_deepsense_dw_large_mel_1ch_ch0_5class_supcon_unfreeze:
+                model: "student_audio_deepsense_dw_large_mel_1ch"
+                training: "finetune_supcon_unfreeze"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                preprocess_mode: "mel"
+                audio_channel_index: 0
+                include_classes: [0, 3, 6, 8, 9]
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask", "freq_mask"]
+                checkpoint_path: "/home/madhav5/demo_codebase/src2/experiments/20260617_180722_pretrain_pretrain_audio_deepsense_dw_large_mel_1ch_ch0/models/best_pretrain_model.pth"
+
+        finetune_audio_deepsense_dw_large_mel_1ch_ch1_5class_supcon_unfreeze:
+                model: "student_audio_deepsense_dw_large_mel_1ch"
+                training: "finetune_supcon_unfreeze"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                preprocess_mode: "mel"
+                audio_channel_index: 1
+                include_classes: [0, 3, 6, 8, 9]
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask", "freq_mask"]
+                checkpoint_path: "/home/madhav5/demo_codebase/src2/experiments/20260617_181308_pretrain_pretrain_audio_deepsense_dw_large_mel_1ch_ch1/models/best_pretrain_model.pth"
+
+        finetune_audio_deepsense_dw_large_mel_1ch_ch2_5class_supcon_unfreeze:
+                model: "student_audio_deepsense_dw_large_mel_1ch"
+                training: "finetune_supcon_unfreeze"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                preprocess_mode: "mel"
+                audio_channel_index: 2
+                include_classes: [0, 3, 6, 8, 9]
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask", "freq_mask"]
+                checkpoint_path: "/home/madhav5/demo_codebase/src2/experiments/20260617_181854_pretrain_pretrain_audio_deepsense_dw_large_mel_1ch_ch2/models/best_pretrain_model.pth"
+
+        pretrain_audio_deepsense_dw_large_mel_bigru:
+                model: "student_audio_deepsense_dw_large_mel_bigru"
+                training: "ssl_pretrain_ce"
+                preprocess_mode: "mel"
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
+        # Finetune experiments must set experiments[..].checkpoint_path (string).
+        # Use a .pth path to load pretrained weights, or "" to keep random init from
+        # create_single_modal_model (then use a finetune training_config with
+        # freeze_backbone: false, e.g. finetune_ce_scratch on finetune_audio_deepsense_dw_large_mel_from_scratch).
+        finetune_audio_deepsense_dw_large_mel_bigru:
+                model: "student_audio_deepsense_dw_large_mel_bigru"
+                training: "finetune_supcon"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                preprocess_mode: "mel"
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask"]
+                checkpoint_path: "/PLEASE_SET_ACIDS_PRETRAIN/best_pretrain_model.pth"
+
+        # Same model/task as finetune_audio_deepsense_dw_large_mel but no pretrained .pth.
+        finetune_audio_deepsense_dw_large_mel_from_scratch:
+                model: "student_audio_deepsense_dw_large_mel"
+                training: "finetune_ce_scratch"
+                task_name: vehicle_classification
+                dataloader: acids_single_label
+                preprocess_mode: "mel"
+                fixed_augmenters:
+                        time_augmenters: ["time_mask"]
+                        freq_augmenters: ["freq_mask"]
+                checkpoint_path: ""
+
+        finetune_audio_resnet_from_pretrain:
+                model: "teacher_audio_resnet18"
+                training: "finetune_supcon"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                fixed_augmenters:
+                        time_augmenters: ["time_mask"]
+                        freq_augmenters: ["freq_mask"]
+                checkpoint_path: "/PLEASE_SET_ACIDS_PRETRAIN/best_pretrain_model.pth"
+
+        # CE finetune from SSL pretrain (mel). Set checkpoint_path after pretrain.py finishes.
+        finetune_audio_deepsense_dw_large_mel:
+                model: "student_audio_deepsense_dw_large_mel"
+                training: "finetune_ce"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                preprocess_mode: "mel"
+                fixed_augmenters:
+                        time_augmenters: ["time_mask"]
+                        freq_augmenters: ["freq_mask"]
+                checkpoint_path: "/data/misra8/demo_experiments/20260520_193222_pretrain_pretrain_audio_deepsense_dw_large_mel/models/best_pretrain_model.pth"
+
+        # 5-class CE finetune: drop vehicle types 1,2,4,5,7 (indices 1,2,4,5,7).
+        # Keeps background(0), 3, 6, 8, 9 — remapped to 5 logits at train time.
+        finetune_audio_deepsense_dw_large_mel_5class:
+                model: "student_audio_deepsense_dw_large_mel"
+                training: "finetune_ce"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                preprocess_mode: "mel"
+                include_classes: [0, 3, 6, 8, 9]
+                fixed_augmenters:
+                        time_augmenters: ["time_mask"]
+                        freq_augmenters: ["freq_mask"]
+                checkpoint_path: "/home/madhav5/demo_codebase/src2/experiments/20260617_165209_pretrain_pretrain_audio_deepsense_dw_large_mel/models/best_pretrain_model.pth"
+
+        # 5-class CE finetune, unfrozen backbone (differential LR).
+        finetune_audio_deepsense_dw_large_mel_5class_unfreeze:
+                model: "student_audio_deepsense_dw_large_mel"
+                training: "finetune_ce_unfreeze"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                preprocess_mode: "mel"
+                include_classes: [0, 3, 6, 8, 9]
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask", "freq_mask"]
+                checkpoint_path: "/home/madhav5/demo_codebase/src2/experiments/20260617_165209_pretrain_pretrain_audio_deepsense_dw_large_mel/models/best_pretrain_model.pth"
+
+        # 5-class CE+SupCon finetune, frozen backbone.
+        finetune_audio_deepsense_dw_large_mel_5class_supcon:
+                model: "student_audio_deepsense_dw_large_mel"
+                training: "finetune_supcon_5class"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                preprocess_mode: "mel"
+                include_classes: [0, 3, 6, 8, 9]
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask", "freq_mask"]
+                checkpoint_path: "/home/madhav5/demo_codebase/src2/experiments/20260617_165209_pretrain_pretrain_audio_deepsense_dw_large_mel/models/best_pretrain_model.pth"
+
+        # 5-class CE+SupCon finetune, unfrozen backbone (differential LR).
+        finetune_audio_deepsense_dw_large_mel_5class_supcon_unfreeze:
+                model: "student_audio_deepsense_dw_large_mel"
+                training: "finetune_supcon_unfreeze"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                preprocess_mode: "mel"
+                include_classes: [0, 3, 6, 8, 9]
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask", "freq_mask"]
+                checkpoint_path: "/home/madhav5/demo_codebase/src2/experiments/20260617_165209_pretrain_pretrain_audio_deepsense_dw_large_mel/models/best_pretrain_model.pth"
+
+        # CE finetune from random init (no .pth).
+        finetune_audio_deepsense_dw_large_mel_ce_scratch:
+                model: "student_audio_deepsense_dw_large_mel"
+                training: "finetune_ce_scratch"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                preprocess_mode: "mel"
+                fixed_augmenters:
+                        time_augmenters: ["time_mask"]
+                        freq_augmenters: ["freq_mask"]
+                checkpoint_path: ""
+
+        finetune_audio_deepsense_dw_large_mel_supcon:
+                model: "student_audio_deepsense_dw_large_mel"
+                training: "finetune_supcon"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                preprocess_mode: "mel"
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask", "freq_mask"]
+                checkpoint_path: "/PLEASE_SET_ACIDS_PRETRAIN/best_pretrain_model.pth"
+
+        # SupCon + difflr from random init (checkpoint_path ""); uses finetune_supcon_difflr_scratch
+        # so freeze_backbone is false (required when no .pth).
+        finetune_audio_deepsense_dw_large_mel_supcon_difflr:
+                model: "student_audio_deepsense_dw_large_mel"
+                training: "finetune_supcon_difflr_scratch"
+                task_name: vehicle_classification
+                dataloader: acids_single_label
+                preprocess_mode: "mel"
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask", "freq_mask"]
+                checkpoint_path: ""
+
+        # W8A8 QAT finetune.
+        # Set checkpoint_path to a float32 pretrained best_pretrain_model.pth.
+        # Run: python finetune.py --experiment_name finetune_audio_deepsense_dw_large_mel_w8a8 \
+        #          --yaml_path ../data/ACIDS.yaml --gpu 0
+        # Output: best_model.pth (float32 fake-quant) + best_model_quantized.pth (int8 weights)
+        finetune_audio_deepsense_dw_large_mel_w8a8:
+                model: "student_audio_deepsense_dw_large_mel_w8a8"
+                training: "w8a8_qat_finetune"
+                task_name: vehicle_classification
+                dataloader: acids_single_label
+                preprocess_mode: "mel"
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask", "freq_mask"]
+                checkpoint_path: "/home/madhav5/demo_codebase/src2/experiments/20260424_015438_finetune_finetune_audio_deepsense_dw_large_mel/models/best_model.pth"
+
+        # W8A16 QAT finetune.
+        # Same as w8a8 above but activations use INT16 [-32768, 32767] instead of INT8.
+        # Run: python finetune.py --experiment_name finetune_audio_deepsense_dw_large_mel_w8a16 \
+        #          --yaml_path ../data/ACIDS.yaml --gpu 0
+        finetune_audio_deepsense_dw_large_mel_w8a16:
+                model: "student_audio_deepsense_dw_large_mel_w8a16"
+                training: "w8a8_qat_finetune"
+                task_name: vehicle_classification
+                dataloader: 
+                preprocess_mode: "mel"
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask", "freq_mask"]
+                checkpoint_path: "/PLEASE_SET_ACIDS_PRETRAIN/best_pretrain_model.pth"
 
 
 # =============================================================================

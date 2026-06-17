@@ -42,6 +42,72 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
+WESTPOINT_DEFAULT_EXPERIMENT = "only_audio_deepsense_dw_large_mel"
+
+
+def _log_loader_label_distribution(loader, config, *, split_name):
+    """Log a split's label distribution so we can see per-class coverage."""
+    if loader is None:
+        return
+    task_name = config["task_name"]
+    task_cfg = config[task_name]
+    num_classes = task_cfg["num_classes"]
+    class_names = task_cfg["class_names"]
+    counts = [0] * num_classes
+    total = 0
+    try:
+        dataset = loader.dataset
+        n = len(dataset)
+        for i in range(n):
+            _, label, _ = dataset[i]
+            label_idx = int(label.item() if hasattr(label, "item") else int(label))
+            if 0 <= label_idx < num_classes:
+                counts[label_idx] += 1
+                total += 1
+    except Exception as exc:
+        logging.warning(
+            "Could not enumerate %s label distribution: %s", split_name, exc
+        )
+        return
+    if total == 0:
+        logging.warning("%s split appears empty.", split_name)
+        return
+    logging.info("%s label distribution (N=%d):", split_name.capitalize(), total)
+    for idx in range(num_classes):
+        c = counts[idx]
+        pct = 100.0 * c / total if total > 0 else 0.0
+        logging.info("  [%d] %-12s %7d  (%.2f%%)", idx, class_names[idx], c, pct)
+
+
+def _inject_westpoint_defaults_if_needed():
+    """
+    Provide a no-args shortcut for WestPoint DeepSense depthwise training.
+
+    When train.py is run without CLI args, defaults are injected so the script runs:
+      --experiment_name only_audio_deepsense_dw_large_mel
+      --yaml_path <repo>/src2/data/WestPoint.yaml
+      --gpu 0
+    """
+    if len(sys.argv) != 1:
+        return
+
+    westpoint_yaml = src2_path / "data" / "WestPoint.yaml"
+    sys.argv.extend(
+        [
+            "--experiment_name",
+            WESTPOINT_DEFAULT_EXPERIMENT,
+            "--yaml_path",
+            str(westpoint_yaml),
+            "--gpu",
+            "0",
+        ]
+    )
+    logging.info(
+        "No CLI args provided. Using WestPoint defaults: experiment=%s, yaml=%s",
+        WESTPOINT_DEFAULT_EXPERIMENT,
+        westpoint_yaml,
+    )
+
 
 def main():
     """Main training function."""
@@ -53,6 +119,7 @@ def main():
     logging.info("TRAINING SCRIPT")
     logging.info("=" * 80)
 
+    _inject_westpoint_defaults_if_needed()
     config = get_config()
     logging.info("Configuration loaded successfully")
 
@@ -74,6 +141,9 @@ def main():
     # 2. Create Dataloaders
     # ========================================================================
     train_loader, val_loader, test_loader = create_dataloaders(config=config)
+
+    _log_loader_label_distribution(val_loader, config, split_name="val")
+    _log_loader_label_distribution(test_loader, config, split_name="test")
 
     # ========================================================================
     # 2b. Setup Normalization
@@ -202,6 +272,7 @@ def main():
                     scheduler=scheduler,
                     num_epochs=stage_epochs,
                     model_name=model_name,
+                    training_config=training_config,
                 )
             )
         elif train_type == "distillation":
