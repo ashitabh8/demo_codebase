@@ -54,7 +54,8 @@ class AugmenterConfig:
             "time_warp", "mag_warp", "MissModalityGenerator", "specmix", "num_sensors",
             "preprocess_mode", "mel_bins", "mel_fmin", "mel_fmax", "sample_rate", "n_fft",
             "input_sample_rate", "downsample_modalities",
-            "loc_mod_in_time_channels", "audio_channel_index",
+            "loc_mod_in_time_channels", "audio_channel_index", "seismic_channel_index",
+            "modality_fusion",
         )
         for key in _augmenter_config_keys:
             if key in config:
@@ -64,10 +65,21 @@ class AugmenterConfig:
         if "preprocess_mode" in experiment_config:
             self.dataset_config["preprocess_mode"] = experiment_config["preprocess_mode"]
 
+        if "n_fft" in experiment_config:
+            self.dataset_config["n_fft"] = experiment_config["n_fft"]
+
         if "audio_channel_index" in experiment_config:
             self.dataset_config["audio_channel_index"] = experiment_config[
                 "audio_channel_index"
             ]
+
+        if "seismic_channel_index" in experiment_config:
+            self.dataset_config["seismic_channel_index"] = experiment_config[
+                "seismic_channel_index"
+            ]
+
+        if "modality_fusion" in experiment_config:
+            self.dataset_config["modality_fusion"] = experiment_config["modality_fusion"]
 
         # When using mel preprocessing, freq augmenters see mel_bins not raw spectrum_len.
         # Override loc_mod_spectrum_len so FreqMaskAugmenter computes correct band widths.

@@ -337,6 +337,25 @@ models:
                 proj_out_dim: 128
                 pretrain_mode: false
 
+        # Audio ch0 + seismic ch0 mel fused along channel dim (in_channels=2).
+        student_audio_seismic_fused_mel_2ch:
+                model_source: "create_single_modal_model"
+                model_type: "deepsense_dw"
+                active_modality: "audio"
+                in_channels: 2
+                in_spectrum_len: 80
+                channels_freq:     [22, 32, 43, 43, 43]
+                kernel_sizes_freq: [[1, 5], [1, 3], [1, 3], [1, 3], [1, 3]]
+                strides_freq:      [[1, 2], [1, 2], [1, 1], [1, 1], [1, 1]]
+                temporal_channels: 42
+                num_temporal_layers: 5
+                temporal_kernel: 3
+                fc_dim: 42
+                dropout_ratio: 0.35
+                proj_hidden_dim: 42
+                proj_out_dim: 128
+                pretrain_mode: false
+
         # W8A8 QAT variant of student_audio_deepsense_dw_large_mel.
         # Identical architecture; depthwise-separable conv layers replaced
         # with QuantDWConv2d/QuantDWConv1d using INT8 weights + INT8 activations.
@@ -992,6 +1011,16 @@ experiments:
                         time_augmenters: ["scaling", "time_mask", "time_mask"]
                         freq_augmenters: ["freq_mask"]
 
+        # Mel pretrain with n_fft=25 (matches decimated segment length; no zero-padding).
+        pretrain_audio_deepsense_dw_large_mel_nfft25:
+                model: "student_audio_deepsense_dw_large_mel"
+                training: "ssl_pretrain_ce"
+                preprocess_mode: "mel"
+                n_fft: 25
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
         # Single-mic SSL pretrain (one channel of the 3-mic shake audio).
         pretrain_audio_deepsense_dw_large_mel_1ch_ch0:
                 model: "student_audio_deepsense_dw_large_mel_1ch"
@@ -1041,7 +1070,7 @@ experiments:
                 dataloader: acids_vehicle
                 preprocess_mode: "mel"
                 audio_channel_index: 1
-                include_classes: [0, 3, 6, 8, 9]
+                include_classes: [1, 2, 3, 4, 5, 6, 7, 8, 9]
                 fixed_augmenters:
                         time_augmenters: ["scaling", "time_mask", "time_mask"]
                         freq_augmenters: ["freq_mask", "freq_mask"]
@@ -1059,6 +1088,39 @@ experiments:
                         time_augmenters: ["scaling", "time_mask", "time_mask"]
                         freq_augmenters: ["freq_mask", "freq_mask"]
                 checkpoint_path: "/home/madhav5/demo_codebase/src2/experiments/20260617_181854_pretrain_pretrain_audio_deepsense_dw_large_mel_1ch_ch2/models/best_pretrain_model.pth"
+
+        # Audio ch0 + seismic ch0 fused mel (channel concat, pad_channels=0).
+        pretrain_audio_seismic_fused_mel_2ch:
+                model: "student_audio_seismic_fused_mel_2ch"
+                training: "ssl_pretrain_ce"
+                preprocess_mode: "mel"
+                audio_channel_index: 0
+                seismic_channel_index: 0
+                modality_fusion:
+                        mode: channel_concat
+                        pad_channels: 0
+                        output_modality: audio
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
+        finetune_audio_seismic_fused_mel_2ch_5class_supcon_unfreeze:
+                model: "student_audio_seismic_fused_mel_2ch"
+                training: "finetune_supcon_unfreeze"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                preprocess_mode: "mel"
+                audio_channel_index: 0
+                seismic_channel_index: 0
+                modality_fusion:
+                        mode: channel_concat
+                        pad_channels: 0
+                        output_modality: audio
+                include_classes: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask", "freq_mask"]
+                checkpoint_path: "/home/madhav5/demo_codebase/src2/experiments/20260617_223745_pretrain_pretrain_audio_seismic_fused_mel_2ch/models/best_pretrain_model.pth"
 
         pretrain_audio_deepsense_dw_large_mel_bigru:
                 model: "student_audio_deepsense_dw_large_mel_bigru"
@@ -1130,6 +1192,20 @@ experiments:
                         time_augmenters: ["time_mask"]
                         freq_augmenters: ["freq_mask"]
                 checkpoint_path: "/home/madhav5/demo_codebase/src2/experiments/20260617_165209_pretrain_pretrain_audio_deepsense_dw_large_mel/models/best_pretrain_model.pth"
+
+        # 5-class CE finetune with n_fft=25 (requires pretrain_audio_deepsense_dw_large_mel_nfft25).
+        finetune_audio_deepsense_dw_large_mel_5class_nfft25:
+                model: "student_audio_deepsense_dw_large_mel"
+                training: "finetune_ce"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                preprocess_mode: "mel"
+                n_fft: 25
+                include_classes: [0, 3, 6, 8, 9]
+                fixed_augmenters:
+                        time_augmenters: ["time_mask"]
+                        freq_augmenters: ["freq_mask"]
+                checkpoint_path: "/home/madhav5/demo_codebase/src2/experiments/20260706_182139_pretrain_pretrain_audio_deepsense_dw_large_mel_nfft25/models/best_pretrain_model.pth"
 
         # 5-class CE finetune, unfrozen backbone (differential LR).
         finetune_audio_deepsense_dw_large_mel_5class_unfreeze:

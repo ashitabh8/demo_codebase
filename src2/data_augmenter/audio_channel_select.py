@@ -1,24 +1,23 @@
-"""Select a single audio microphone channel before preprocessing."""
+"""Select a single microphone or sensor channel before preprocessing."""
 
 import logging
 
 
-def select_audio_channel(
+def select_modality_channel(
     time_loc_inputs: dict,
     channel_index: int,
-    target_modality: str = "audio",
-    num_channels: int = 3,
+    target_modality: str,
+    num_channels: int,
 ) -> dict:
     """
-    Keep one audio channel; other modalities are unchanged.
+    Keep one channel for target_modality; other modalities are unchanged.
 
-    Expects 4-D tensors [B, C, segments, T] (channel in dim 1). Also accepts
-    [B, 1, C, segments, T] is NOT supported — use standard layout only.
+    Expects 4-D tensors [B, C, segments, T] (channel in dim 1).
     """
     if channel_index < 0 or channel_index >= num_channels:
         raise ValueError(
-            f"audio_channel_index ({channel_index}) out of range for "
-            f"num_channels={num_channels}"
+            f"channel_index ({channel_index}) out of range for "
+            f"modality={target_modality!r} num_channels={num_channels}"
         )
 
     out = {}
@@ -30,21 +29,44 @@ def select_audio_channel(
                 continue
             if x.dim() != 4:
                 raise ValueError(
-                    f"select_audio_channel expects 4-D input for {loc}/{mod}, "
+                    f"select_modality_channel expects 4-D input for {loc}/{mod}, "
                     f"got shape {tuple(x.shape)}"
                 )
             c = x.shape[1]
             if c == num_channels:
                 out[loc][mod] = x[:, channel_index : channel_index + 1, ...]
             elif c == 1 and x.shape[2] == num_channels:
-                # [B, 1, C, T] legacy layout
                 out[loc][mod] = x[:, :, channel_index : channel_index + 1, :]
             else:
                 raise ValueError(
-                    f"Cannot select audio channel on {loc}/{mod}: shape {tuple(x.shape)}, "
+                    f"Cannot select channel on {loc}/{mod}: shape {tuple(x.shape)}, "
                     f"expected C={num_channels} on dim 1 or dim 2"
                 )
     logging.debug(
-        "Selected audio channel %d (modality=%s)", channel_index, target_modality
+        "Selected %s channel %d of %d", target_modality, channel_index, num_channels
     )
     return out
+
+
+def select_audio_channel(
+    time_loc_inputs: dict,
+    channel_index: int,
+    target_modality: str = "audio",
+    num_channels: int = 3,
+) -> dict:
+    """Keep one audio channel; other modalities are unchanged."""
+    return select_modality_channel(
+        time_loc_inputs, channel_index, target_modality, num_channels
+    )
+
+
+def select_seismic_channel(
+    time_loc_inputs: dict,
+    channel_index: int,
+    target_modality: str = "seismic",
+    num_channels: int = 2,
+) -> dict:
+    """Keep one seismic channel; other modalities are unchanged."""
+    return select_modality_channel(
+        time_loc_inputs, channel_index, target_modality, num_channels
+    )

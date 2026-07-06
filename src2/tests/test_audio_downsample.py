@@ -168,3 +168,74 @@ def test_forward_fixed_time_mask_before_downsample():
 
     mel_out = augmenter.preprocess(aug_x)
     assert mel_out["shake"]["audio"].shape == (1, 1, 4, 80)
+
+
+def _make_acids_time_inputs(batch=1, audio_c=3, segments=7, audio_t=256):
+    return {
+        "shake": {
+            "audio": torch.randn(batch, audio_c, segments, audio_t),
+        }
+    }
+
+
+def test_nfft25_mel_after_acids_downsample():
+    """ACIDS-shaped 256-sample segments -> 25 @ 1600 Hz -> mel with n_fft=25."""
+    ds = AudioDownsampler(INPUT_SR, TARGET_SR, target_modalities=["audio"])
+    decimated = ds.downsample(_make_acids_time_inputs())
+    assert decimated["shake"]["audio"].shape == (1, 3, 7, 25)
+
+    mel = MelPreprocessor(
+        n_fft=25,
+        n_mel=80,
+        fmin=20.0,
+        fmax=800.0,
+        sample_rate=TARGET_SR,
+        device="cpu",
+    )
+    mel_out = mel.preprocess(decimated)
+    out = mel_out["shake"]["audio"]
+    assert out.shape == (1, 3, 7, 80)
+    assert torch.isfinite(out).all()
+
+
+def test_nfft25_mel_differs_from_nfft160_padded():
+    """n_fft=25 on 25 samples is not equivalent to n_fft=160 with zero-padding."""
+    x = torch.randn(1, 1, 1, 25)
+    mel25 = MelPreprocessor(25, 80, 20.0, 800.0, TARGET_SR, device="cpu")
+    mel160 = MelPreprocessor(160, 80, 20.0, 800.0, TARGET_SR, device="cpu")
+
+    out25 = mel25.preprocess({"shake": {"audio": x}})
+    padded = torch.cat([x, torch.zeros(1, 1, 1, 135)], dim=-1)
+    out160 = mel160.preprocess({"shake": {"audio": padded}})
+
+    assert not torch.allclose(
+        out25["shake"]["audio"],
+        out160["shake"]["audio"],
+        atol=1e-4,
+    )
+
+
+def test_augmenter_config_nfft_experiment_override():
+    from data_augmenter.augmenter_utils import AugmenterConfig
+
+    config = {
+        "modality_names": ["audio"],
+        "location_names": ["shake"],
+        "num_segments": 7,
+        "n_fft": 160,
+        "mel_bins": 80,
+        "preprocess_mode": "fft",
+        "loc_mod_spectrum_len": {"shake": {"audio": 256}},
+    }
+    experiment_config = {
+        "model": "student_audio_deepsense_dw_large_mel",
+        "preprocess_mode": "mel",
+        "n_fft": 25,
+        "fixed_augmenters": {
+            "time_augmenters": ["no"],
+            "freq_augmenters": ["no"],
+        },
+    }
+    args = AugmenterConfig(config, experiment_config)
+    assert args.dataset_config["n_fft"] == 25
+    assert args.dataset_config["preprocess_mode"] == "mel"

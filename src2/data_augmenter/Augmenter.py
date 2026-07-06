@@ -21,7 +21,8 @@ from .BandLimitedNoiseAugmenter import BandLimitedNoiseAugmenter
 from .AudioNoiseAugmenter import AudioNoiseAugmenter
 from .mel_preprocess import MelPreprocessor
 from .audio_downsample import AudioDownsampler
-from .audio_channel_select import select_audio_channel
+from .audio_channel_select import select_audio_channel, select_seismic_channel
+from .modality_fuse import fuse_channel_concat
 
 
 class Augmenter:
@@ -94,6 +95,42 @@ class Augmenter:
             )
             self._audio_num_channels = n_ch
 
+        self.seismic_channel_index = None
+        if "seismic_channel_index" in args.dataset_config:
+            self.seismic_channel_index = int(
+                args.dataset_config["seismic_channel_index"]
+            )
+            loc = args.dataset_config["location_names"][0]
+            n_ch = args.dataset_config.get("loc_mod_in_time_channels", {}).get(
+                loc, {}
+            ).get("seismic", 2)
+            if self.seismic_channel_index < 0 or self.seismic_channel_index >= n_ch:
+                raise ValueError(
+                    f"seismic_channel_index ({self.seismic_channel_index}) out of range "
+                    f"for {n_ch} seismic channels"
+                )
+            logging.info(
+                "Seismic channel selection enabled: using channel %d of %d",
+                self.seismic_channel_index,
+                n_ch,
+            )
+            self._seismic_num_channels = n_ch
+
+        self.modality_fusion = None
+        if "modality_fusion" in args.dataset_config:
+            fusion_cfg = args.dataset_config["modality_fusion"]
+            if fusion_cfg.get("mode") == "channel_concat":
+                self.modality_fusion = fusion_cfg
+                logging.info(
+                    "Modality fusion enabled: channel_concat pad_channels=%s output=%s",
+                    fusion_cfg.get("pad_channels", 0),
+                    fusion_cfg.get("output_modality", "audio"),
+                )
+            elif fusion_cfg.get("mode"):
+                raise ValueError(
+                    f"Unknown modality_fusion.mode: {fusion_cfg.get('mode')}"
+                )
+
     def _apply_audio_channel_select(self, time_loc_inputs):
         if self.audio_channel_index is None:
             return time_loc_inputs
@@ -104,6 +141,29 @@ class Augmenter:
             num_channels=self._audio_num_channels,
         )
 
+    def _apply_seismic_channel_select(self, time_loc_inputs):
+        if self.seismic_channel_index is None:
+            return time_loc_inputs
+        return select_seismic_channel(
+            time_loc_inputs,
+            self.seismic_channel_index,
+            target_modality="seismic",
+            num_channels=self._seismic_num_channels,
+        )
+
+    def _apply_modality_fusion(self, freq_loc_inputs):
+        if self.modality_fusion is None:
+            return freq_loc_inputs
+        loc = self.args.dataset_config["location_names"][0]
+        return fuse_channel_concat(
+            freq_loc_inputs,
+            location=loc,
+            audio_modality="audio",
+            seismic_modality="seismic",
+            pad_channels=int(self.modality_fusion.get("pad_channels", 0)),
+            output_modality=self.modality_fusion.get("output_modality", "audio"),
+        )
+
     def forward(self, option, time_loc_inputs, labels=None, return_aug_id=False, return_aug_mods=False):
         """General interface for the forward function."""
         for loc in time_loc_inputs:
@@ -112,6 +172,7 @@ class Augmenter:
                     time_loc_inputs[loc][mod] = time_loc_inputs[loc][mod].reshape(time_loc_inputs[loc][mod].shape[0], 1, self.args.dataset_config["num_segments"], -1)
 
         time_loc_inputs = self._apply_audio_channel_select(time_loc_inputs)
+        time_loc_inputs = self._apply_seismic_channel_select(time_loc_inputs)
 
         # move to target device
         time_loc_inputs, labels = self.move_to_target_device(time_loc_inputs, labels)
@@ -226,9 +287,10 @@ class Augmenter:
         if hasattr(self, "audio_downsampler"):
             time_loc_inputs = self.audio_downsampler.downsample(time_loc_inputs)
         if self.preprocess_mode == "mel":
-            return self.mel_preprocessor.preprocess(time_loc_inputs)
+            freq_loc_inputs = self.mel_preprocessor.preprocess(time_loc_inputs)
         else:
-            return self.fft_preprocess(time_loc_inputs)
+            freq_loc_inputs = self.fft_preprocess(time_loc_inputs)
+        return self._apply_modality_fusion(freq_loc_inputs)
 
     def fft_preprocess(self, time_loc_inputs):
         """Run FFT on the time-domain input.
