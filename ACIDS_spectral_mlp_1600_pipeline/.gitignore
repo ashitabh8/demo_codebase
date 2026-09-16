@@ -1,0 +1,18 @@
+# build outputs
+deploy/spectral_infer
+deploy/spectral_txt_to_bin
+deploy/*.o
+deploy/*.so
+# artifacts/*.pth  # keep spectral_mlp.pth in repo for teammates
+artifacts/*.log
+exported_acids/
+__pycache__/
+*.pyc
+Tiny-NN-in-C/**/__pycache__/
+Tiny-NN-in-C/.benchmark_cache/
+Tiny-NN-in-C/.mnist_cache/
+
+# Tiny-NN local build artifacts
+Tiny-NN-in-C/test/test_c_ops
+Tiny-NN-in-C/test/test_c_ops_int8
+Tiny-NN-in-C/test/test_c_ops_int16

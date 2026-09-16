@@ -1,0 +1,11 @@
+{
+  "train_samples": 21631,
+  "val_samples": 2190,
+  "train_accuracy": 0.9809070315750543,
+  "train_macro_f1": 0.962811011531573,
+  "val_accuracy": 0.9073059360730593,
+  "val_macro_f1": 0.7778567656514799,
+  "checkpoint": "/home/madhav5/demo_codebase/ARL_deploy/ACIDS_spectral_mlp_1600_pipeline/artifacts/spectral_mlp.pth",
+  "frontend": "welch n_fft=160 hop=80",
+  "feature_dim": 83
+}

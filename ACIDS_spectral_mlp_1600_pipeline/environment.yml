@@ -1,0 +1,23 @@
+# Conda env for ACIDS spectral MLP 1600 Welch train→W8→C pipeline only.
+#
+#   conda env create -f environment.yml
+#   conda activate spectral_mlp_1600
+#   cd ARL_deploy/ACIDS_spectral_mlp_1600_pipeline
+#   python3 run_acids_pipeline.py --paths_yaml paths.yaml
+#
+name: spectral_mlp_1600
+
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.10
+  - pip
+  - numpy=1.26.4
+  - scikit-learn=1.5.2
+  - pyyaml=6.0.2
+  - tqdm
+  - pip:
+    - --extra-index-url https://download.pytorch.org/whl/cu118
+    - torch==2.6.0

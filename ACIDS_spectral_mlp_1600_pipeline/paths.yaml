@@ -1,0 +1,5 @@
+# Paths to ACIDS vehicle_classification index files (.pt path lists).
+# Edit these or pass --train_index / --val_index / --test_index on the CLI.
+train_index_file: /data/misra8/ACIDS/random_partition_index_vehicle_classification/train_index.txt
+val_index_file: /data/misra8/ACIDS/random_partition_index_vehicle_classification/val_index.txt
+test_index_file: /data/misra8/ACIDS/random_partition_index_vehicle_classification/test_index.txt
