@@ -53,7 +53,9 @@ class AugmenterConfig:
             "mixup", "scaling", "permutation", "negation", "horizontal_flip", "channel_shuffle",
             "time_warp", "mag_warp", "MissModalityGenerator", "specmix", "num_sensors",
             "preprocess_mode", "mel_bins", "mel_fmin", "mel_fmax", "sample_rate", "n_fft",
-            "input_sample_rate", "downsample_modalities",
+            "input_sample_rate", "downsample_modalities", "downsample_mode",
+            "acids_used_samples", "acids_padded_seg_len",
+            "acids_mel_window", "acids_mel_hop", "acids_mel_rows", "mel_window_fn",
             "loc_mod_in_time_channels", "audio_channel_index", "seismic_channel_index",
             "modality_fusion",
         )
@@ -67,6 +69,9 @@ class AugmenterConfig:
 
         if "n_fft" in experiment_config:
             self.dataset_config["n_fft"] = experiment_config["n_fft"]
+
+        if "downsample_mode" in experiment_config:
+            self.dataset_config["downsample_mode"] = experiment_config["downsample_mode"]
 
         if "audio_channel_index" in experiment_config:
             self.dataset_config["audio_channel_index"] = experiment_config[

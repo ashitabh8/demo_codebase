@@ -205,3 +205,28 @@ def test_batch_consistency():
     assert torch.allclose(out[0], out[1], atol=1e-6), (
         f"Batch items differ; max diff: {(out[0] - out[1]).abs().max().item():.2e}"
     )
+
+
+# ── Test 11: Hann window changes output vs none ───────────────────────────────
+def test_hann_window_changes_output():
+    torch.manual_seed(1)
+    B, C, T = 2, 1, 1600
+    x = torch.randn(B, C, T)
+    stream = {"shake": {"audio": x}}
+    base = MelPreprocessor(
+        160, 80, 20.0, 800.0, 1600, device="cpu",
+        mel_window=228, mel_hop=228, mel_rows=7, window_fn="none",
+    )
+    hann = MelPreprocessor(
+        160, 80, 20.0, 800.0, 1600, device="cpu",
+        mel_window=228, mel_hop=228, mel_rows=7, window_fn="hann",
+    )
+    out_base = base.preprocess_continuous(stream)["shake"]["audio"]
+    out_hann = hann.preprocess_continuous(stream)["shake"]["audio"]
+    assert out_base.shape == out_hann.shape
+    assert not torch.allclose(out_base, out_hann)
+
+
+def test_mel_fmax_350_and_800_valid():
+    for fmax in (350.0, 800.0):
+        MelPreprocessor(160, 80, 20.0, fmax, 1600, device="cpu")

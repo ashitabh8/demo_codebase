@@ -87,10 +87,17 @@ normalization:
 # Preprocessing mode: "fft" (default) or "mel"
 input_sample_rate: 16000   # native .pt audio rate
 sample_rate: 1600          # effective rate after audio decimation
+downsample_mode: fir_decimate
+acids_used_samples: 1600
+acids_padded_seg_len: 256
+acids_mel_window: 228
+acids_mel_hop: 228
+acids_mel_rows: 7
 n_fft: 160
 mel_bins: 80
 mel_fmin: 20.0
 mel_fmax: 800.0
+mel_window_fn: none
 
 # Segments
 num_segments: 7
@@ -1021,6 +1028,30 @@ experiments:
                         time_augmenters: ["scaling", "time_mask", "time_mask"]
                         freq_augmenters: ["freq_mask"]
 
+        # Single-mic ch0 SSL pretrain @ 1600 Hz, n_fft=25 (deployment-aligned).
+        pretrain_audio_deepsense_dw_large_mel_1ch_ch0_nfft25:
+                model: "student_audio_deepsense_dw_large_mel_1ch"
+                training: "ssl_pretrain_ce"
+                preprocess_mode: "mel"
+                n_fft: 25
+                audio_channel_index: 0
+                downsample_modalities: ["audio"]
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
+        # Tail-cut continuous stream: flatten 7x256 -> [:1600], mel n_fft=160.
+        pretrain_audio_deepsense_dw_large_mel_1ch_ch0_continuous:
+                model: "student_audio_deepsense_dw_large_mel_1ch"
+                training: "ssl_pretrain_ce"
+                preprocess_mode: "mel"
+                downsample_mode: "acids_continuous"
+                n_fft: 160
+                audio_channel_index: 0
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask"]
+
         # Single-mic SSL pretrain (one channel of the 3-mic shake audio).
         pretrain_audio_deepsense_dw_large_mel_1ch_ch0:
                 model: "student_audio_deepsense_dw_large_mel_1ch"
@@ -1245,6 +1276,22 @@ experiments:
                         time_augmenters: ["scaling", "time_mask", "time_mask"]
                         freq_augmenters: ["freq_mask", "freq_mask"]
                 checkpoint_path: "/home/madhav5/demo_codebase/src2/experiments/20260617_165209_pretrain_pretrain_audio_deepsense_dw_large_mel/models/best_pretrain_model.pth"
+
+        # Same as finetune_audio_deepsense_dw_large_mel_5class_supcon_unfreeze, audio ch0 only, n_fft=25.
+        finetune_audio_deepsense_dw_large_mel_1ch_ch0_5class_nfft25_supcon_unfreeze:
+                model: "student_audio_deepsense_dw_large_mel_1ch"
+                training: "finetune_supcon_unfreeze"
+                task_name: vehicle_classification
+                dataloader: acids_vehicle
+                preprocess_mode: "mel"
+                n_fft: 25
+                audio_channel_index: 0
+                downsample_modalities: ["audio"]
+                include_classes: [0, 3, 6, 8, 9]
+                fixed_augmenters:
+                        time_augmenters: ["scaling", "time_mask", "time_mask"]
+                        freq_augmenters: ["freq_mask", "freq_mask"]
+                checkpoint_path: "/home/madhav5/demo_codebase/src2/experiments/20260707_210739_pretrain_pretrain_audio_deepsense_dw_large_mel_1ch_ch0_nfft25/models/best_pretrain_model.pth"
 
         # CE finetune from random init (no .pth).
         finetune_audio_deepsense_dw_large_mel_ce_scratch:

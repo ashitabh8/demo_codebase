@@ -21,6 +21,7 @@ from .BandLimitedNoiseAugmenter import BandLimitedNoiseAugmenter
 from .AudioNoiseAugmenter import AudioNoiseAugmenter
 from .mel_preprocess import MelPreprocessor
 from .audio_downsample import AudioDownsampler
+from .acids_continuous import AcidsContinuousTruncator
 from .audio_channel_select import select_audio_channel, select_seismic_channel
 from .modality_fuse import fuse_channel_concat
 
@@ -46,9 +47,23 @@ class Augmenter:
             raise ValueError(f"Invalid preprocess_mode: {preprocess_mode}")
         
         self.preprocess_mode = preprocess_mode
-        effective_sr = args.dataset_config.get("sample_rate", 16000)
+        self.downsample_mode = args.dataset_config.get("downsample_mode", "fir_decimate")
+        if self.downsample_mode not in ("fir_decimate", "acids_continuous"):
+            raise ValueError(f"Invalid downsample_mode: {self.downsample_mode}")
+
+        effective_sr = args.dataset_config["sample_rate"]
         input_sr = args.dataset_config.get("input_sample_rate", effective_sr)
-        if input_sr != effective_sr:
+
+        if self.downsample_mode == "acids_continuous":
+            self.acids_truncator = AcidsContinuousTruncator(
+                num_segments=args.dataset_config["num_segments"],
+                padded_seg_len=args.dataset_config["acids_padded_seg_len"],
+                used_samples=args.dataset_config["acids_used_samples"],
+                target_modalities=args.dataset_config.get(
+                    "downsample_modalities", ["audio"]
+                ),
+            )
+        elif input_sr != effective_sr:
             downsample_modalities = args.dataset_config.get(
                 "downsample_modalities", ["audio"]
             )
@@ -59,22 +74,38 @@ class Augmenter:
                 device=args.device,
             )
             if preprocess_mode == "mel":
-                mel_fmax = args.dataset_config.get("mel_fmax", 8000.0)
+                mel_fmax = args.dataset_config["mel_fmax"]
                 nyquist = effective_sr / 2
                 if mel_fmax > nyquist:
                     raise ValueError(
                         f"mel_fmax ({mel_fmax}) exceeds Nyquist ({nyquist}) for "
                         f"sample_rate ({effective_sr}) after downsampling"
                     )
+
         if preprocess_mode == "mel":
-            self.mel_preprocessor = MelPreprocessor(
-                n_fft=args.dataset_config.get("n_fft", 1600),
-                n_mel=args.dataset_config.get("mel_bins", 80),
-                fmin=args.dataset_config.get("mel_fmin", 20.0),
-                fmax=args.dataset_config.get("mel_fmax", 8000.0),
-                sample_rate=effective_sr,
-                device=args.device,
-            )
+            mel_kwargs = {
+                "n_fft": args.dataset_config["n_fft"],
+                "n_mel": args.dataset_config["mel_bins"],
+                "fmin": args.dataset_config["mel_fmin"],
+                "fmax": args.dataset_config["mel_fmax"],
+                "sample_rate": effective_sr,
+                "device": args.device,
+            }
+            if self.downsample_mode == "acids_continuous":
+                mel_kwargs["mel_window"] = args.dataset_config["acids_mel_window"]
+                mel_kwargs["mel_hop"] = args.dataset_config["acids_mel_hop"]
+                mel_kwargs["mel_rows"] = args.dataset_config["acids_mel_rows"]
+            if "mel_window_fn" in args.dataset_config:
+                mel_kwargs["window_fn"] = args.dataset_config["mel_window_fn"]
+            self.mel_preprocessor = MelPreprocessor(**mel_kwargs)
+            if self.downsample_mode == "acids_continuous":
+                mel_fmax = args.dataset_config["mel_fmax"]
+                nyquist = effective_sr / 2
+                if mel_fmax > nyquist:
+                    raise ValueError(
+                        f"mel_fmax ({mel_fmax}) exceeds Nyquist ({nyquist}) for "
+                        f"sample_rate ({effective_sr})"
+                    )
 
         self.audio_channel_index = None
         if "audio_channel_index" in args.dataset_config:
@@ -284,6 +315,36 @@ class Augmenter:
 
     def preprocess(self, time_loc_inputs):
         """Dispatch to mel or fft preprocessing based on preprocess_mode."""
+        if self.downsample_mode == "acids_continuous":
+            stream_loc_inputs = self.acids_truncator.truncate(time_loc_inputs)
+            if self.preprocess_mode == "mel":
+                continuous = {}
+                segmented = {}
+                for loc in stream_loc_inputs:
+                    continuous[loc] = {}
+                    segmented[loc] = {}
+                    for mod, x in stream_loc_inputs[loc].items():
+                        if x.dim() == 3:
+                            continuous[loc][mod] = x
+                        else:
+                            segmented[loc][mod] = x
+                freq_loc_inputs = {}
+                for loc in stream_loc_inputs:
+                    freq_loc_inputs[loc] = {}
+                if any(continuous[loc] for loc in continuous):
+                    mel_cont = self.mel_preprocessor.preprocess_continuous(continuous)
+                    for loc in mel_cont:
+                        freq_loc_inputs[loc].update(mel_cont[loc])
+                if any(segmented[loc] for loc in segmented):
+                    mel_seg = self.mel_preprocessor.preprocess(segmented)
+                    for loc in mel_seg:
+                        freq_loc_inputs[loc].update(mel_seg[loc])
+            else:
+                raise ValueError(
+                    "acids_continuous downsample_mode requires preprocess_mode mel"
+                )
+            return self._apply_modality_fusion(freq_loc_inputs)
+
         if hasattr(self, "audio_downsampler"):
             time_loc_inputs = self.audio_downsampler.downsample(time_loc_inputs)
         if self.preprocess_mode == "mel":

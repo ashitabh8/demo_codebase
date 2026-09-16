@@ -79,10 +79,28 @@ def build_mel_filterbank(n_fft: int, n_mel: int, fmin: float, fmax: float, sampl
 
 
 class MelPreprocessor:
-    def __init__(self, n_fft: int, n_mel: int, fmin: float, fmax: float, sample_rate: int, device='cpu'):
+    def __init__(
+        self,
+        n_fft: int,
+        n_mel: int,
+        fmin: float,
+        fmax: float,
+        sample_rate: int,
+        device="cpu",
+        mel_window=None,
+        mel_hop=None,
+        mel_rows=None,
+        window_fn="none",
+    ):
         self.n_fft = n_fft
         self.n_mel = n_mel
         self.device = device
+        self.mel_window = mel_window
+        self.mel_hop = mel_hop
+        self.mel_rows = mel_rows
+        if window_fn not in ("none", "hann"):
+            raise ValueError(f"window_fn must be 'none' or 'hann', got {window_fn!r}")
+        self.window_fn = window_fn
         # Build and register filterbank as attribute (torch.Tensor on device)
         self.filterbank = build_mel_filterbank(n_fft, n_mel, fmin, fmax, sample_rate).to(device)
 
@@ -91,6 +109,59 @@ class MelPreprocessor:
         self.device = device
         self.filterbank = self.filterbank.to(device)
         return self
+
+    def _apply_time_window(self, x: torch.Tensor) -> torch.Tensor:
+        """Optional Hann window before FFT; pad/truncate to n_fft."""
+        if self.window_fn == "none":
+            return x
+        t = x.shape[-1]
+        win_len = min(t, self.n_fft)
+        hann = torch.hann_window(win_len, device=x.device, dtype=x.dtype)
+        x = x[..., :win_len] * hann
+        if win_len < self.n_fft:
+            x = torch.nn.functional.pad(x, (0, self.n_fft - win_len))
+        return x
+
+    def _log_mel_from_time(self, x: torch.Tensor) -> torch.Tensor:
+        """x: [..., time_samples] -> [..., n_mel]"""
+        x = self._apply_time_window(x)
+        fft = torch.fft.rfft(x, n=self.n_fft, dim=-1)
+        power = fft.abs() ** 2
+        mel = power @ self.filterbank.to(device=power.device, dtype=power.dtype).T
+        return torch.log(mel + 1e-6)
+
+    def preprocess_continuous(self, stream_loc_inputs: dict) -> dict:
+        """
+        Apply log-mel to a continuous stream with fixed hop windows.
+
+        Args:
+            stream_loc_inputs: dict[location][modality] = Tensor [B, C, stream_len]
+
+        Returns:
+            mel_loc_inputs: dict[location][modality] = Tensor [B, C, mel_rows, n_mel]
+        """
+        if self.mel_window is None or self.mel_hop is None or self.mel_rows is None:
+            raise ValueError(
+                "preprocess_continuous requires mel_window, mel_hop, and mel_rows "
+                "on MelPreprocessor"
+            )
+        mel_loc_inputs = {}
+        for location, modality_dict in stream_loc_inputs.items():
+            mel_loc_inputs[location] = {}
+            for modality, stream in modality_dict.items():
+                if stream.dim() != 3:
+                    raise ValueError(
+                        f"preprocess_continuous expects [B,C,T] for {location}/{modality}, "
+                        f"got shape {tuple(stream.shape)}"
+                    )
+                rows = []
+                for row_idx in range(self.mel_rows):
+                    start = row_idx * self.mel_hop
+                    end = start + self.mel_window
+                    window = stream[..., start:end]
+                    rows.append(self._log_mel_from_time(window))
+                mel_loc_inputs[location][modality] = torch.stack(rows, dim=2)
+        return mel_loc_inputs
 
     def preprocess(self, time_loc_inputs: dict) -> dict:
         """
@@ -113,14 +184,6 @@ class MelPreprocessor:
             mel_loc_inputs[location] = {}
             for modality, x in modality_dict.items():
                 # x: [B, C, segments, time_samples]
-                # Step 1: one-sided FFT -> [B, C, segments, n_fft//2+1]
-                fft = torch.fft.rfft(x, n=self.n_fft, dim=-1)
-                # Step 2: power spectrum
-                power = fft.abs() ** 2
-                # Step 3: apply mel filterbank -> [B, C, segments, n_mel]
-                # filterbank: [n_mel, n_fft//2+1], so power @ filterbank.T
-                mel = power @ self.filterbank.to(device=power.device, dtype=power.dtype).T
-                # Step 4: log with epsilon floor
-                log_mel = torch.log(mel + 1e-6)
+                log_mel = self._log_mel_from_time(x)
                 mel_loc_inputs[location][modality] = log_mel
         return mel_loc_inputs

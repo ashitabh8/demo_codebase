@@ -239,3 +239,34 @@ def test_augmenter_config_nfft_experiment_override():
     args = AugmenterConfig(config, experiment_config)
     assert args.dataset_config["n_fft"] == 25
     assert args.dataset_config["preprocess_mode"] == "mel"
+
+
+def test_fir_decimate_default_downsample_mode():
+    args = SimpleNamespace(
+        device="cpu",
+        train_mode="supervised",
+        stage="train",
+        learn_framework=None,
+        model="student_audio_deepsense_dw_large_mel",
+        dataset_config={
+            "modality_names": ["audio"],
+            "location_names": ["shake"],
+            "num_segments": 7,
+            "preprocess_mode": "mel",
+            "input_sample_rate": INPUT_SR,
+            "sample_rate": TARGET_SR,
+            "n_fft": 160,
+            "mel_bins": 80,
+            "mel_fmin": 20.0,
+            "mel_fmax": 800.0,
+            "downsample_modalities": ["audio"],
+            "fixed_augmenters": {
+                "time_augmenters": ["no"],
+                "freq_augmenters": ["no"],
+            },
+        },
+    )
+    augmenter = Augmenter(args)
+    assert augmenter.downsample_mode == "fir_decimate"
+    assert hasattr(augmenter, "audio_downsampler")
+    assert not hasattr(augmenter, "acids_truncator")
