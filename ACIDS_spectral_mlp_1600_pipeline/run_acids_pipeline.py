@@ -51,6 +51,18 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--gpu", type=int, default=-1)
     parser.add_argument(
+        "--num_classes",
+        type=int,
+        default=None,
+        help="Force MLP head size. Default: max(train/val label)+1.",
+    )
+    parser.add_argument(
+        "--class_names",
+        type=Path,
+        default=None,
+        help="Text file with one class name per line (length must equal num_classes).",
+    )
+    parser.add_argument(
         "--max_export_samples",
         type=int,
         default=0,
@@ -96,24 +108,27 @@ def main():
         run(cmd)
 
     if not args.skip_train:
-        run(
-            [
-                py,
-                str(PKG / "train_from_1600.py"),
-                "--export_root",
-                str(args.export_root),
-                "--output_dir",
-                str(args.artifacts_dir),
-                "--epochs",
-                str(args.epochs),
-                "--batch_size",
-                str(args.batch_size),
-                "--lr",
-                str(args.lr),
-                "--gpu",
-                str(args.gpu),
-            ]
-        )
+        train_cmd = [
+            py,
+            str(PKG / "train_from_1600.py"),
+            "--export_root",
+            str(args.export_root),
+            "--output_dir",
+            str(args.artifacts_dir),
+            "--epochs",
+            str(args.epochs),
+            "--batch_size",
+            str(args.batch_size),
+            "--lr",
+            str(args.lr),
+            "--gpu",
+            str(args.gpu),
+        ]
+        if args.num_classes is not None:
+            train_cmd.extend(["--num_classes", str(args.num_classes)])
+        if args.class_names is not None:
+            train_cmd.extend(["--class_names", str(args.class_names)])
+        run(train_cmd)
 
     if not args.skip_w8:
         run(
@@ -130,42 +145,48 @@ def main():
         )
 
     if not args.skip_package:
-        run(
-            [
-                py,
-                str(PKG / "package_deploy_samples.py"),
-                "--sample_dir",
-                str(args.export_root / "test_txt"),
-                "--output_dir",
-                str(args.deploy_dir),
-                "--max_samples",
-                str(args.smoke_package_samples),
-            ]
-        )
+        package_cmd = [
+            py,
+            str(PKG / "package_deploy_samples.py"),
+            "--sample_dir",
+            str(args.export_root / "test_txt"),
+            "--output_dir",
+            str(args.deploy_dir),
+            "--max_samples",
+            str(args.smoke_package_samples),
+            "--ckpt_path",
+            str(ckpt),
+        ]
+        if args.class_names is not None:
+            package_cmd.extend(["--class_names", str(args.class_names)])
+        run(package_cmd)
 
     if not args.skip_build:
         run(["make", "clean"], cwd=args.deploy_dir)
         run(["make"], cwd=args.deploy_dir)
 
     if not args.skip_test_infer:
-        run(
-            [
-                py,
-                str(PKG / "run_c_test_infer.py"),
-                "--deploy_dir",
-                str(args.deploy_dir),
-                "--test_bin_dir",
-                str(args.export_root / "test_bin"),
-                "--test_y",
-                str(args.export_root / "test_y.npy"),
-                "--test_names",
-                str(args.export_root / "test_names.txt"),
-                "--output_json",
-                str(args.artifacts_dir / "c_test_report.json"),
-                "--max_samples",
-                str(args.max_export_samples),
-            ]
-        )
+        score_cmd = [
+            py,
+            str(PKG / "run_c_test_infer.py"),
+            "--deploy_dir",
+            str(args.deploy_dir),
+            "--test_bin_dir",
+            str(args.export_root / "test_bin"),
+            "--test_y",
+            str(args.export_root / "test_y.npy"),
+            "--test_names",
+            str(args.export_root / "test_names.txt"),
+            "--output_json",
+            str(args.artifacts_dir / "c_test_report.json"),
+            "--max_samples",
+            str(args.max_export_samples),
+            "--ckpt_path",
+            str(ckpt),
+        ]
+        if args.class_names is not None:
+            score_cmd.extend(["--class_names", str(args.class_names)])
+        run(score_cmd)
 
     print("\nACIDS pipeline complete.")
     print(f"  export_root: {args.export_root}")

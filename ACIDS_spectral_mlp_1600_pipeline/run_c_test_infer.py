@@ -7,14 +7,14 @@ This script only launches the binary and aggregates match rates.
 
 Usage:
   python3 run_c_test_infer.py --deploy_dir deploy --test_bin_dir exported_acids/test_bin \\
-      --test_y exported_acids/test_y.npy --test_names exported_acids/test_names.txt
+      --test_y exported_acids/test_y.npy --test_names exported_acids/test_names.txt \\
+      --ckpt_path artifacts/spectral_mlp.pth
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import re
 import subprocess
 import sys
 from collections import Counter
@@ -23,18 +23,13 @@ from pathlib import Path
 import numpy as np
 
 PKG = Path(__file__).resolve().parent
-CLASS_NAMES = [
-    "background",
-    "1",
-    "2",
-    "3",
-    "4",
-    "5",
-    "6",
-    "7",
-    "8",
-    "9",
-]
+sys.path.insert(0, str(PKG))
+
+from train_from_1600 import (
+    DEFAULT_CLASS_NAMES,
+    load_class_names_file,
+    load_class_names_from_ckpt,
+)
 
 
 def parse_infer_output(text: str) -> list[dict]:
@@ -56,6 +51,12 @@ def parse_infer_output(text: str) -> list[dict]:
     return blocks
 
 
+def name_for(class_names: list[str], class_id: int) -> str:
+    if 0 <= class_id < len(class_names):
+        return class_names[class_id]
+    return str(class_id)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Score ACIDS test set via C spectral_infer")
     parser.add_argument("--deploy_dir", type=Path, default=PKG / "deploy")
@@ -63,6 +64,18 @@ def main():
     parser.add_argument("--test_y", type=Path, required=True)
     parser.add_argument("--test_names", type=Path, required=True)
     parser.add_argument("--output_json", type=Path, default=None)
+    parser.add_argument(
+        "--ckpt_path",
+        type=Path,
+        default=PKG / "artifacts" / "spectral_mlp.pth",
+        help="Checkpoint with class_names / num_classes for scoring.",
+    )
+    parser.add_argument(
+        "--class_names",
+        type=Path,
+        default=None,
+        help="Optional text file with one class name per line.",
+    )
     parser.add_argument(
         "--max_samples",
         type=int,
@@ -74,6 +87,14 @@ def main():
     infer = args.deploy_dir / "spectral_infer"
     if not infer.exists():
         raise FileNotFoundError(f"missing {infer}; run make -C {args.deploy_dir}")
+
+    if args.class_names is not None:
+        class_names = load_class_names_file(args.class_names)
+    elif args.ckpt_path.exists():
+        class_names = load_class_names_from_ckpt(args.ckpt_path, None)
+    else:
+        class_names = list(DEFAULT_CLASS_NAMES)
+        print(f"warning: no checkpoint at {args.ckpt_path}; using default 10-class names")
 
     names = [ln.strip() for ln in args.test_names.read_text(encoding="utf-8").splitlines() if ln.strip()]
     y_true = np.load(args.test_y).astype(np.int64)
@@ -116,24 +137,36 @@ def main():
     n = len(y_true)
     acc = correct / max(n, 1)
 
-    # macro-F1 without sklearn to keep this script light if needed
+    # Cover every class id that appears in labels or predictions, and the
+    # configured head size from class_names.
+    n_classes = max(
+        len(class_names),
+        int(y_true.max()) + 1 if y_true.size else 0,
+        int(y_pred.max()) + 1 if y_pred.size else 0,
+    )
     f1s = []
-    for c in range(len(CLASS_NAMES)):
+    for c in range(n_classes):
         tp = int(np.sum((y_pred == c) & (y_true == c)))
         fp = int(np.sum((y_pred == c) & (y_true != c)))
         fn = int(np.sum((y_pred != c) & (y_true == c)))
         prec = tp / (tp + fp) if (tp + fp) else 0.0
         rec = tp / (tp + fn) if (tp + fn) else 0.0
         f1s.append(0.0 if (prec + rec) == 0 else 2 * prec * rec / (prec + rec))
-    macro_f1 = float(np.mean(f1s))
+    macro_f1 = float(np.mean(f1s)) if f1s else 0.0
 
     report = {
         "n_test": n,
         "accuracy": acc,
         "macro_f1": macro_f1,
         "correct": correct,
-        "pred_hist": {CLASS_NAMES[k]: int(v) for k, v in Counter(y_pred.tolist()).items()},
-        "true_hist": {CLASS_NAMES[k]: int(v) for k, v in Counter(y_true.tolist()).items()},
+        "num_classes": len(class_names),
+        "class_names": class_names,
+        "pred_hist": {
+            name_for(class_names, k): int(v) for k, v in Counter(y_pred.tolist()).items()
+        },
+        "true_hist": {
+            name_for(class_names, k): int(v) for k, v in Counter(y_true.tolist()).items()
+        },
         "inference": "C spectral_infer (Welch + scaler + W8 MLP)",
     }
     out = args.output_json or (args.deploy_dir.parent / "artifacts" / "c_test_report.json")

@@ -46,6 +46,32 @@ def build_linear_w8_rules(ir_graph):
     return rules
 
 
+def _c_escape(s: str) -> str:
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def write_acids_class_names_h(output_dir: Path, class_names: list[str]) -> None:
+    """Write deploy/acids_class_names.h so C inference matches the trained head."""
+    n = len(class_names)
+    if n < 1:
+        raise ValueError("class_names must be non-empty")
+    names_c = ",\n".join(f'    "{_c_escape(name)}"' for name in class_names)
+    body = f"""/* Auto-generated class names for spectral MLP C inference ({n} classes). */
+#ifndef ACIDS_CLASS_NAMES_H
+#define ACIDS_CLASS_NAMES_H
+
+#define ACIDS_NUM_CLASSES {n}
+
+static const char *ACIDS_CLASS_NAMES[ACIDS_NUM_CLASSES] = {{
+{names_c}
+}};
+
+#endif /* ACIDS_CLASS_NAMES_H */
+"""
+    (output_dir / "acids_class_names.h").write_text(body, encoding="utf-8")
+    print(f"  wrote acids_class_names.h ({n} classes)")
+
+
 def write_spectral_scaler_h(output_dir: Path, mean: np.ndarray, scale: np.ndarray) -> None:
     mean = np.asarray(mean, dtype=np.float64).ravel()
     scale = np.asarray(scale, dtype=np.float64).ravel()
@@ -173,12 +199,22 @@ def export_w8(
     ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
     in_dim = int(ckpt["in_dim"])
     num_classes = int(ckpt["num_classes"])
+    if "class_names" in ckpt and ckpt["class_names"]:
+        class_names = [str(n) for n in ckpt["class_names"]]
+    else:
+        from train_from_1600 import resolve_class_names
+
+        class_names = resolve_class_names(num_classes, None)
+    if len(class_names) != num_classes:
+        raise ValueError(
+            f"checkpoint class_names length {len(class_names)} != num_classes {num_classes}"
+        )
     model = SpectralMLP(in_dim, num_classes)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
 
     example_input = torch.randn(1, in_dim)
-    print(f"Compiling IR (example input {list(example_input.shape)})...")
+    print(f"Compiling IR (example input {list(example_input.shape)}, C={num_classes})...")
     ir_graph = compile_model(model, example_input, return_ir=True, verbose=False)
 
     rules = build_linear_w8_rules(ir_graph)
@@ -207,6 +243,7 @@ def export_w8(
         np.asarray(ckpt["scaler_mean"]),
         np.asarray(ckpt["scaler_scale"]),
     )
+    write_acids_class_names_h(output_dir, class_names)
     print(f"Done. W8 C artifacts in {output_dir}")
 
 

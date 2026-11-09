@@ -3,10 +3,14 @@
 Train Spectral MLP from already-flat float32[1600] samples_txt streams.
 
 Uses Welch-averaged spectral features (n_fft=160, hop=80) over the full second
-→ 83-dim → StandardScaler → MLP(83→128→128→10).
+→ 83-dim → StandardScaler → MLP(83→128→128→C).
+
+C (num_classes) defaults to max(label)+1 over train+val. Override with
+--num_classes / --class_names when your dataset needs a fixed head size.
 
 Usage:
   python train_from_1600.py --data_root data --output_dir artifacts
+  python train_from_1600.py --export_root exported_acids --num_classes 15
 """
 
 from __future__ import annotations
@@ -33,7 +37,9 @@ from welch_features import FEATURE_DIM, streams_to_features
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-CLASS_NAMES = [
+# Default ACIDS vehicle_classification names (used when num_classes == 10 and
+# no --class_names file is given).
+DEFAULT_CLASS_NAMES = [
     "background",
     "1",
     "2",
@@ -45,6 +51,8 @@ CLASS_NAMES = [
     "8",
     "9",
 ]
+# Backward-compatible alias for scripts that import CLASS_NAMES.
+CLASS_NAMES = DEFAULT_CLASS_NAMES
 
 
 class SpectralMLP(nn.Module):
@@ -62,6 +70,106 @@ class SpectralMLP(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
+
+
+def load_class_names_file(path: Path) -> list[str]:
+    """Load one class name per non-empty line from a text file."""
+    names = [
+        ln.strip()
+        for ln in Path(path).read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    if not names:
+        raise ValueError(f"class names file is empty: {path}")
+    return names
+
+
+def resolve_num_classes(
+    y_train: np.ndarray,
+    y_val: np.ndarray,
+    num_classes: int | None = None,
+) -> int:
+    """
+    Resolve head size from labels.
+
+    Default: max(train, val) + 1.
+    Override: --num_classes N requires every label in 0 .. N-1.
+    """
+    y = np.concatenate([np.asarray(y_train, dtype=np.int64), np.asarray(y_val, dtype=np.int64)])
+    if y.size == 0:
+        raise ValueError("cannot resolve num_classes: no train/val labels")
+    if int(y.min()) < 0:
+        raise ValueError(f"labels must be >= 0, got min={int(y.min())}")
+
+    inferred = int(y.max()) + 1
+    if num_classes is None:
+        n = inferred
+        logger.info("num_classes=%d (from max label + 1)", n)
+    else:
+        n = int(num_classes)
+        if n < 1:
+            raise ValueError(f"--num_classes must be >= 1, got {n}")
+        if inferred > n:
+            raise ValueError(
+                f"labels require at least {inferred} classes "
+                f"(max label={int(y.max())}), but --num_classes={n}"
+            )
+        logger.info("num_classes=%d (forced via --num_classes; data max+1=%d)", n, inferred)
+
+    present = set(int(v) for v in np.unique(y).tolist())
+    missing = [i for i in range(n) if i not in present]
+    if missing:
+        logger.warning(
+            "labels 0..%d missing from train+val (head still has %d logits): %s",
+            n - 1,
+            n,
+            missing,
+        )
+    return n
+
+
+def resolve_class_names(
+    num_classes: int,
+    class_names_path: Path | None = None,
+) -> list[str]:
+    """
+    Resolve display names for class ids 0 .. num_classes-1.
+
+    --class_names file (one name per line) wins when given.
+    Else if num_classes == 10, use DEFAULT_CLASS_NAMES.
+    Else name classes "0" .. "N-1".
+    """
+    if class_names_path is not None:
+        names = load_class_names_file(class_names_path)
+        if len(names) != num_classes:
+            raise ValueError(
+                f"class names file has {len(names)} names, expected {num_classes}: "
+                f"{class_names_path}"
+            )
+        return names
+    if num_classes == len(DEFAULT_CLASS_NAMES):
+        return list(DEFAULT_CLASS_NAMES)
+    return [str(i) for i in range(num_classes)]
+
+
+def load_class_names_from_ckpt(
+    ckpt_path: Path,
+    class_names_path: Path | None = None,
+) -> list[str]:
+    """Load class names from a checkpoint, with optional file override."""
+    if class_names_path is not None:
+        return load_class_names_file(class_names_path)
+    ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
+    if "class_names" in ckpt and ckpt["class_names"]:
+        names = [str(n) for n in ckpt["class_names"]]
+        n = int(ckpt.get("num_classes", len(names)))
+        if len(names) != n:
+            raise ValueError(
+                f"checkpoint class_names length {len(names)} != num_classes {n}: {ckpt_path}"
+            )
+        return names
+    n = int(ckpt["num_classes"])
+    return resolve_class_names(n, None)
 
 
 def parse_args():
@@ -86,7 +194,18 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--num_classes", type=int, default=10)
+    parser.add_argument(
+        "--num_classes",
+        type=int,
+        default=None,
+        help="Force MLP head size. Default: max(train/val label)+1.",
+    )
+    parser.add_argument(
+        "--class_names",
+        type=Path,
+        default=None,
+        help="Text file with one class name per line (length must equal num_classes).",
+    )
     return parser.parse_args()
 
 
@@ -192,6 +311,10 @@ def main():
         raise ValueError(f"val streams expected (N,1600), got {val_streams.shape}")
     logger.info("Loaded train=%d val=%d streams", len(y_train), len(y_val))
 
+    num_classes = resolve_num_classes(y_train, y_val, args.num_classes)
+    class_names = resolve_class_names(num_classes, args.class_names)
+    logger.info("class_names=%s", class_names)
+
     X_train = streams_to_features(train_streams)
     X_val = streams_to_features(val_streams)
     if X_train.shape[1] != FEATURE_DIM:
@@ -202,7 +325,7 @@ def main():
         y_train,
         X_val,
         y_val,
-        args.num_classes,
+        num_classes,
         device,
         args.epochs,
         args.batch_size,
@@ -219,12 +342,12 @@ def main():
             "scaler_mean": np.asarray(scaler.mean_, dtype=np.float64),
             "scaler_scale": np.asarray(scaler.scale_, dtype=np.float64),
             "in_dim": int(X_train.shape[1]),
-            "num_classes": int(args.num_classes),
+            "num_classes": int(num_classes),
             "frontend": "welch",
             "n_fft": 160,
             "hop": 80,
             "sample_rate": 1600,
-            "class_names": CLASS_NAMES,
+            "class_names": class_names,
         },
         ckpt_path,
     )
@@ -237,6 +360,8 @@ def main():
         "train_macro_f1": train_m["macro_f1"],
         "val_accuracy": val_m["accuracy"],
         "val_macro_f1": val_m["macro_f1"],
+        "num_classes": int(num_classes),
+        "class_names": class_names,
         "checkpoint": str(ckpt_path),
         "frontend": "welch n_fft=160 hop=80",
         "feature_dim": FEATURE_DIM,
@@ -245,9 +370,10 @@ def main():
         json.dumps(report, indent=2) + "\n", encoding="utf-8"
     )
     logger.info(
-        "Done. train_acc=%.4f val_acc=%.4f",
+        "Done. train_acc=%.4f val_acc=%.4f num_classes=%d",
         train_m["accuracy"],
         val_m["accuracy"],
+        num_classes,
     )
 
 

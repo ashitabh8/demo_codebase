@@ -4,6 +4,7 @@ Package labeled 1600-stream .txt samples into deploy/samples, samples_txt, acids
 
 Usage:
   python package_deploy_samples.py --sample_dir data/val --output_dir deploy --max_samples 32
+  python package_deploy_samples.py --sample_dir data/val --ckpt_path artifacts/spectral_mlp.pth
 """
 
 from __future__ import annotations
@@ -18,19 +19,11 @@ PKG = Path(__file__).resolve().parent
 sys.path.insert(0, str(PKG))
 
 from load_1600_txt import load_one_txt
-
-CLASS_NAMES = [
-    "background",
-    "1",
-    "2",
-    "3",
-    "4",
-    "5",
-    "6",
-    "7",
-    "8",
-    "9",
-]
+from train_from_1600 import (
+    DEFAULT_CLASS_NAMES,
+    load_class_names_file,
+    load_class_names_from_ckpt,
+)
 
 
 def safe_stem(name: str) -> str:
@@ -41,6 +34,7 @@ def write_acids_samples_h(
     output_dir: Path,
     stems: list[str],
     label_ids: list[int],
+    class_names: list[str],
 ) -> None:
     n = len(stems)
     names_c = ",\n".join(f'    "{s}"' for s in stems)
@@ -48,8 +42,8 @@ def write_acids_samples_h(
     ids_c = ",\n".join(f"    {i}" for i in label_ids)
     label_names = []
     for i in label_ids:
-        if 0 <= i < len(CLASS_NAMES):
-            label_names.append(CLASS_NAMES[i])
+        if 0 <= i < len(class_names):
+            label_names.append(class_names[i])
         else:
             label_names.append(str(i))
     names_labels_c = ",\n".join(f'    "{n}"' for n in label_names)
@@ -82,7 +76,12 @@ static const char *ACIDS_SAMPLE_LABEL_NAMES[ACIDS_NUM_PACKAGED_SAMPLES] = {{
     print(f"  wrote acids_samples.h ({n} samples)")
 
 
-def package_samples(sample_dir: Path, output_dir: Path, max_samples: int) -> None:
+def package_samples(
+    sample_dir: Path,
+    output_dir: Path,
+    max_samples: int,
+    class_names: list[str],
+) -> None:
     sample_dir = Path(sample_dir)
     output_dir = Path(output_dir)
     bin_dir = output_dir / "samples"
@@ -128,7 +127,7 @@ def package_samples(sample_dir: Path, output_dir: Path, max_samples: int) -> Non
         label_ids.append(int(label))
         print(f"  packaged {stem} label={label}")
 
-    write_acids_samples_h(output_dir, stems, label_ids)
+    write_acids_samples_h(output_dir, stems, label_ids, class_names)
     print(f"Done. {len(stems)} samples in {output_dir}")
 
 
@@ -137,8 +136,29 @@ def main():
     parser.add_argument("--sample_dir", type=Path, default=PKG / "data" / "val")
     parser.add_argument("--output_dir", type=Path, default=PKG / "deploy")
     parser.add_argument("--max_samples", type=int, default=32)
+    parser.add_argument(
+        "--ckpt_path",
+        type=Path,
+        default=PKG / "artifacts" / "spectral_mlp.pth",
+        help="Checkpoint with class_names (used when --class_names is omitted).",
+    )
+    parser.add_argument(
+        "--class_names",
+        type=Path,
+        default=None,
+        help="Optional text file with one class name per line.",
+    )
     args = parser.parse_args()
-    package_samples(args.sample_dir, args.output_dir, args.max_samples)
+
+    if args.class_names is not None:
+        class_names = load_class_names_file(args.class_names)
+    elif args.ckpt_path.exists():
+        class_names = load_class_names_from_ckpt(args.ckpt_path, None)
+    else:
+        class_names = list(DEFAULT_CLASS_NAMES)
+        print(f"  warning: no checkpoint at {args.ckpt_path}; using default 10-class names")
+
+    package_samples(args.sample_dir, args.output_dir, args.max_samples, class_names)
 
 
 if __name__ == "__main__":

@@ -33,8 +33,8 @@ Human-readable txt → bin:
 audio[1600] @ 1600 Hz
   → Welch RFFT (n_fft=160, hop=80) over full second → 83 raw features
   → StandardScaler
-  → W8 MLP (83→128→128→10)
+  → W8 MLP (83→128→128→C)
   → argmax class
 ```
 
-Classes: `background`, `1` … `9`.
+`C` and the class name table come from training. They are written into `acids_class_names.h` by `export_w8_spectral_mlp.py` (do not hand-edit). The published ACIDS vehicle packet uses `C=10` with names `background`, `1` … `9`.

@@ -39,6 +39,18 @@ def main():
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--gpu", type=int, default=-1)
+    parser.add_argument(
+        "--num_classes",
+        type=int,
+        default=None,
+        help="Force MLP head size. Default: max(train/val label)+1.",
+    )
+    parser.add_argument(
+        "--class_names",
+        type=Path,
+        default=None,
+        help="Text file with one class name per line (length must equal num_classes).",
+    )
     parser.add_argument("--skip_train", action="store_true")
     parser.add_argument("--skip_export", action="store_true")
     parser.add_argument("--skip_package", action="store_true")
@@ -51,24 +63,27 @@ def main():
     ckpt = args.artifacts_dir / "spectral_mlp.pth"
 
     if not args.skip_train:
-        run(
-            [
-                py,
-                str(PKG / "train_from_1600.py"),
-                "--data_root",
-                str(args.data_root),
-                "--output_dir",
-                str(args.artifacts_dir),
-                "--epochs",
-                str(args.epochs),
-                "--batch_size",
-                str(args.batch_size),
-                "--lr",
-                str(args.lr),
-                "--gpu",
-                str(args.gpu),
-            ]
-        )
+        train_cmd = [
+            py,
+            str(PKG / "train_from_1600.py"),
+            "--data_root",
+            str(args.data_root),
+            "--output_dir",
+            str(args.artifacts_dir),
+            "--epochs",
+            str(args.epochs),
+            "--batch_size",
+            str(args.batch_size),
+            "--lr",
+            str(args.lr),
+            "--gpu",
+            str(args.gpu),
+        ]
+        if args.num_classes is not None:
+            train_cmd.extend(["--num_classes", str(args.num_classes)])
+        if args.class_names is not None:
+            train_cmd.extend(["--class_names", str(args.class_names)])
+        run(train_cmd)
 
     if not args.skip_export:
         run(
@@ -85,18 +100,21 @@ def main():
         )
 
     if not args.skip_package:
-        run(
-            [
-                py,
-                str(PKG / "package_deploy_samples.py"),
-                "--sample_dir",
-                str(sample_dir),
-                "--output_dir",
-                str(args.deploy_dir),
-                "--max_samples",
-                str(args.max_samples),
-            ]
-        )
+        package_cmd = [
+            py,
+            str(PKG / "package_deploy_samples.py"),
+            "--sample_dir",
+            str(sample_dir),
+            "--output_dir",
+            str(args.deploy_dir),
+            "--max_samples",
+            str(args.max_samples),
+            "--ckpt_path",
+            str(ckpt),
+        ]
+        if args.class_names is not None:
+            package_cmd.extend(["--class_names", str(args.class_names)])
+        run(package_cmd)
 
     if not args.skip_build:
         run(["make", "clean"], cwd=args.deploy_dir)

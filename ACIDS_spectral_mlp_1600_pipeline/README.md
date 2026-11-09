@@ -4,12 +4,14 @@ Self-contained train → W8 quantize → **C inference** package for ACIDS vehic
 
 - **Input:** 1 s ch0 continuous audio stream from ACIDS `.pt`
 - **Frontend:** Welch mean periodogram → **83** features
-- **Model:** MLP `83 → 128 → 128 → 10`, StandardScaler, weight-only **int8**
+- **Model:** MLP `83 → 128 → 128 → C`, StandardScaler, weight-only **int8**
 - **Inference:** entirely in C (`deploy/spectral_infer`)
+
+`C` is the number of classes. It defaults to `max(label) + 1` over train and val (10 for the published ACIDS vehicle task). Override with `--num_classes` / `--class_names` when your dataset needs a different head.
 
 Needs `gcc` / `make`. **Tiny-NN-in-C is vendored** in `Tiny-NN-in-C/` (used only for W8 export).
 
-## Latest full-ACIDS results
+## Latest full-ACIDS results (10 classes)
 
 | Split | N | Accuracy | Macro F1 |
 |-------|---|----------|----------|
@@ -17,7 +19,75 @@ Needs `gcc` / `make`. **Tiny-NN-in-C is vendored** in `Tiny-NN-in-C/` (used only
 | Val | 2190 | 90.7% | 0.778 |
 | **Test (C infer)** | **2190** | **91.0%** | **0.780** |
 
-Test scoring calls `./spectral_infer` on every test `.bin` (Welch + scaler + W8 MLP in C).
+These numbers are the original 10-class ACIDS vehicle run. Test scoring calls `./spectral_infer` on every test `.bin` (Welch + scaler + W8 MLP in C).
+
+## Choosing the number of classes
+
+Label ids are integers:
+
+- `.txt` streams: line 2 of each file
+- ACIDS `.pt`: `sample["label"]["vehicle_type"]`
+
+They must already be contiguous ids `0 .. C-1`. The pipeline does not remap labels.
+
+### Default (read from data)
+
+Omit the flag. Training sets `C = max(train labels, val labels) + 1`. The published ACIDS vehicle set stays at 10 with no extra arguments.
+
+```bash
+python3 train_from_1600.py --data_root data --output_dir artifacts
+python3 run_pipeline.py --data_root data --epochs 20 --gpu -1
+python3 run_acids_pipeline.py --paths_yaml paths.yaml --epochs 50 --gpu 0
+```
+
+### Force a head size
+
+Use this when a split is missing a class that still needs a logit (for example train only has `0..13` but you need 15 outputs):
+
+```bash
+python3 train_from_1600.py --export_root exported_acids --num_classes 15
+python3 run_pipeline.py --data_root data --num_classes 15
+python3 run_acids_pipeline.py --paths_yaml paths.yaml --num_classes 15
+```
+
+Every label must be in `0 .. N-1`. A higher label raises an error.
+
+### Optional class names
+
+Create a text file with one name per line (length must equal `C`):
+
+```text
+background
+truck
+car
+...
+```
+
+```bash
+python3 train_from_1600.py --data_root data --num_classes 15 --class_names my_classes.txt
+python3 run_pipeline.py --data_root data --num_classes 15 --class_names my_classes.txt
+python3 run_acids_pipeline.py --paths_yaml paths.yaml --num_classes 15 --class_names my_classes.txt
+```
+
+If you omit `--class_names`:
+
+- `C == 10` keeps the ACIDS defaults (`background`, `1` … `9`)
+- otherwise classes are named `0` … `C-1`
+
+Names are stored in `artifacts/spectral_mlp.pth` as `class_names` / `num_classes`.
+
+### After training: do not hand-edit C artifacts
+
+Do not edit `deploy/model.c`, `deploy/weights.h`, or `deploy/acids_class_names.h` by hand. The next W8 export rewrites them from the checkpoint:
+
+```bash
+python3 export_w8_spectral_mlp.py \
+  --ckpt_path artifacts/spectral_mlp.pth \
+  --output_dir deploy
+make -C deploy
+```
+
+`export_w8_spectral_mlp.py` writes `acids_class_names.h` (`ACIDS_NUM_CLASSES` and the name table) so C inference's logit buffer matches the trained head. Packaging and C test scoring also read class names from the checkpoint.
 
 ## Quick run on bundled `data/` (flat `.txt`)
 
@@ -60,7 +130,7 @@ python3 run_acids_pipeline.py --max_export_samples 200 --epochs 10 --gpu -1
 
 1. **`export_acids_indices.py`** — ACIDS `.pt` → ch0 continuous stream → `exported_acids/{train,val,test}_X.npy` + `test_bin/*.bin`
 2. **`train_from_1600.py`** — Welch 83-dim → StandardScaler → MLP → `artifacts/spectral_mlp.pth`
-3. **`export_w8_spectral_mlp.py`** — Tiny-NN W8 → `deploy/model.*`, `weights.h`, `spectral_scaler.h`
+3. **`export_w8_spectral_mlp.py`** — Tiny-NN W8 → `deploy/model.*`, `weights.h`, `spectral_scaler.h`, `acids_class_names.h`
 4. **`make -C deploy`** — builds `spectral_infer` (Welch C + kissfft + scaler + W8)
 5. **`run_c_test_infer.py`** — C inference on all test bins → `artifacts/c_test_report.json`
 
@@ -85,7 +155,7 @@ make
 
 ```text
 sample_name
-<label_id 0-9>       # vehicle_type: 0=background, 1..9
+<label_id 0..C-1>    # integer class id; ACIDS vehicle defaults: 0=background, 1..9
 RAW_AUDIO_STREAM
 1600
 <1600 floats>
@@ -116,4 +186,4 @@ deploy/                   # COMPLETE C inference packet (handoff)
 
 Zip/copy **`deploy/`** alone. Recipients need only `gcc`/`make` — no Python, no Tiny-NN, no ACIDS `.pt` data.
 
-Scaler stays in C (`spectral_scaler.h`), not folded into layer weights.
+Scaler stays in C (`spectral_scaler.h`), not folded into layer weights. Class count and names in the packet come from training via `acids_class_names.h`.
