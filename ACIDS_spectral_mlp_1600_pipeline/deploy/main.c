@@ -8,7 +8,10 @@
  * Run with one or more paths to execute explicit raw binary samples.
  *
  * Pipeline: 1600 audio -> Welch spectral features (83) -> StandardScaler -> W8 MLP.
+ * Confidence = softmax probability of the predicted class (works for any
+ * ACIDS_NUM_CLASSES, e.g. 10 or 15).
  */
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -27,6 +30,17 @@ static int argmax(const float *values, int n)
         }
     }
     return best;
+}
+
+/* Softmax P(pred). Numerically stable via max-logit subtraction. */
+static float pred_confidence(const float *logits, int n, int pred)
+{
+    float max_logit = logits[pred];
+    float sum = 0.f;
+    for (int i = 0; i < n; ++i) {
+        sum += expf(logits[i] - max_logit);
+    }
+    return 1.f / sum;
 }
 
 static int run_one_file(
@@ -68,6 +82,7 @@ static int run_one_file(
     model_forward(scaled, logits);
 
     int pred = argmax(logits, ACIDS_NUM_CLASSES);
+    float confidence = pred_confidence(logits, ACIDS_NUM_CLASSES, pred);
     if (sample_name != NULL) {
         printf("sample=%s\n", sample_name);
     }
@@ -78,6 +93,7 @@ static int run_one_file(
     }
     printf("pred_id=%d\n", pred);
     printf("pred_name=%s\n", ACIDS_CLASS_NAMES[pred]);
+    printf("confidence=%.6f\n", confidence);
     printf("logits=");
     for (int i = 0; i < ACIDS_NUM_CLASSES; ++i) {
         printf("%s%.9g", i == 0 ? "" : ",", logits[i]);

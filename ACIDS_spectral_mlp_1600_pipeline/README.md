@@ -21,7 +21,11 @@ Needs `gcc` / `make`. **Tiny-NN-in-C is vendored** in `Tiny-NN-in-C/` (used only
 
 These numbers are the original 10-class ACIDS vehicle run. Test scoring calls `./spectral_infer` on every test `.bin` (Welch + scaler + W8 MLP in C).
 
-## Choosing the number of classes
+## Choosing 10 vs 15 classes (or any `C`)
+
+Do **not** hand-edit `deploy/acids_class_names.h` or the W8 weights to flip class count.
+Retrain (or re-export from a checkpoint trained with that `C`) so the MLP head,
+`acids_class_names.h`, and C logit buffer all match.
 
 Label ids are integers:
 
@@ -29,6 +33,12 @@ Label ids are integers:
 - ACIDS `.pt`: `sample["label"]["vehicle_type"]`
 
 They must already be contiguous ids `0 .. C-1`. The pipeline does not remap labels.
+
+| Goal | What to pass |
+|------|----------------|
+| **10 classes** (published ACIDS vehicle) | nothing — data max label is 9 → `C=10` |
+| **15 classes** | `--num_classes 15` (labels must be `0..14`) |
+| Custom names | `--class_names my_classes.txt` (one name per line, length = `C`) |
 
 ### Default (read from data)
 
@@ -40,14 +50,19 @@ python3 run_pipeline.py --data_root data --epochs 20 --gpu -1
 python3 run_acids_pipeline.py --paths_yaml paths.yaml --epochs 50 --gpu 0
 ```
 
-### Force a head size
+### Force 15 classes (example)
 
-Use this when a split is missing a class that still needs a logit (for example train only has `0..13` but you need 15 outputs):
+```bash
+# labels in data/ or exported_acids must be 0..14
+python3 run_pipeline.py --data_root data --num_classes 15 --epochs 20 --gpu -1
+python3 run_acids_pipeline.py --paths_yaml paths.yaml --num_classes 15 --epochs 50 --gpu 0
+```
+
+Or call train alone:
 
 ```bash
 python3 train_from_1600.py --export_root exported_acids --num_classes 15
-python3 run_pipeline.py --data_root data --num_classes 15
-python3 run_acids_pipeline.py --paths_yaml paths.yaml --num_classes 15
+python3 train_from_1600.py --data_root data --num_classes 15
 ```
 
 Every label must be in `0 .. N-1`. A higher label raises an error.
@@ -150,6 +165,8 @@ make
 ./spectral_txt_to_bin clip.txt /tmp/clip.bin
 ./spectral_infer /tmp/clip.bin
 ```
+
+Each inference prints `pred_id`, `pred_name`, and **`confidence`** (softmax probability of the predicted class, in `[0, 1]`). That uses `ACIDS_NUM_CLASSES` from `acids_class_names.h`, so the same binary works for a 10-class or 15-class packet after you retrain/export for that head.
 
 `.txt` layout:
 
