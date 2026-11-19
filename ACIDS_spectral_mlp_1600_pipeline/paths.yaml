@@ -1,5 +1,8 @@
-# Paths to ACIDS vehicle_classification index files (.pt path lists).
-# Edit these or pass --train_index / --val_index / --test_index on the CLI.
-train_index_file: /data/misra8/ACIDS/random_partition_index_vehicle_classification/train_index.txt
-val_index_file: /data/misra8/ACIDS/random_partition_index_vehicle_classification/val_index.txt
-test_index_file: /data/misra8/ACIDS/random_partition_index_vehicle_classification/test_index.txt
+# Optional ACIDS .pt index lists for run_acids_pipeline.py only.
+# For flat stream .txt training, put files in data/train, data/val, data/test
+# and run: python3 run_pipeline.py --data_root data
+#
+# These indices are the disjoint fixed partition (copies under indices/).
+train_index_file: indices/train_index.txt
+val_index_file: indices/val_index.txt
+test_index_file: indices/test_index.txt

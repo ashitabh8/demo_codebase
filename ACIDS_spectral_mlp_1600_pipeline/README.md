@@ -19,7 +19,7 @@ Needs `gcc` / `make`. **Tiny-NN-in-C is vendored** in `Tiny-NN-in-C/` (used only
 | Val | 2190 | 90.7% | 0.778 |
 | **Test (C infer)** | **2190** | **91.0%** | **0.780** |
 
-These numbers are the original 10-class ACIDS vehicle run. Test scoring calls `./spectral_infer` on every test `.bin` (Welch + scaler + W8 MLP in C).
+These numbers are from the original 10-class run on `random_partition` where **val == test** (not a true hold-out). Prefer the default **fixed** partition in `paths.yaml` for disjoint train/val/test and re-run to get honest test metrics. Test scoring calls `./spectral_infer` on every test `.bin` (Welch + scaler + W8 MLP in C).
 
 ## Choosing 10 vs 15 classes (or any `C`)
 
@@ -104,50 +104,53 @@ make -C deploy
 
 `export_w8_spectral_mlp.py` writes `acids_class_names.h` (`ACIDS_NUM_CLASSES` and the name table) so C inference's logit buffer matches the trained head. Packaging and C test scoring also read class names from the checkpoint.
 
-## Quick run on bundled `data/` (flat `.txt`)
+## Put your data here (default pathway)
 
-`data/` already has small train/val sets as `RAW_AUDIO_STREAM` text files (no `.pt`, no ACIDS index):
+Drop `RAW_AUDIO_STREAM` `.txt` clips into:
 
 ```text
 data/train/*.txt
 data/val/*.txt
+data/test/*.txt    # held-out; used for final report + C scoring
 ```
 
+| Split | Role |
+|-------|------|
+| **train** | Fit scaler + MLP |
+| **val** | Checkpoint selection (best val accuracy) |
+| **test** | Held-out metrics + C `spectral_infer` scoring |
+
 ```bash
+cd ACIDS_spectral_mlp_1600_pipeline
 python3 run_pipeline.py --data_root data --epochs 20 --gpu -1
 ```
 
-This trains on `data/train`, validates on `data/val`, exports W8 into `deploy/`, packages val samples, builds `spectral_infer`, and runs a smoke infer. Put more `.txt` files in the same layout to use your own splits.
+That trains on `train`, selects on `val`, scores `test` (if present), writes W8 into `deploy/`, and builds `spectral_infer`.  
+If `data/test/` is empty, it warns and skips held-out C scoring.
 
-## Full ACIDS run (`.pt` via index files)
+### Optional: full ACIDS `.pt` indices
 
-Edit [`paths.yaml`](paths.yaml) (defaults match `src2/data/ACIDS.yaml` `vehicle_classification`):
-
-```yaml
-train_index_file: /data/misra8/ACIDS/random_partition_index_vehicle_classification/train_index.txt
-val_index_file:   /data/misra8/ACIDS/random_partition_index_vehicle_classification/val_index.txt
-test_index_file:  /data/misra8/ACIDS/random_partition_index_vehicle_classification/test_index.txt
-```
-
-Each index line is a path to a `.pt` under `/data/misra8/ACIDS/individual_time_samples_one_sec/`. Or pass `--train_index` / `--val_index` / `--test_index` on the CLI.
+Index lists (disjoint fixed partition) live under `indices/` and are referenced by `paths.yaml`:
 
 ```bash
 python3 run_acids_pipeline.py --paths_yaml paths.yaml --epochs 50 --gpu 0
 ```
 
-Quick smoke (cap each split):
+Quick smoke:
 
 ```bash
 python3 run_acids_pipeline.py --max_export_samples 200 --epochs 10 --gpu -1
 ```
 
+Export refuses overlapping splits unless you pass `--allow_overlapping_splits`.
+
 ### Steps (`run_acids_pipeline.py`)
 
-1. **`export_acids_indices.py`** — ACIDS `.pt` → ch0 continuous stream → `exported_acids/{train,val,test}_X.npy` + `test_bin/*.bin`
-2. **`train_from_1600.py`** — Welch 83-dim → StandardScaler → MLP → `artifacts/spectral_mlp.pth`
+1. **`export_acids_indices.py`** — ACIDS `.pt` → ch0 continuous stream → `exported_acids/{train,val,test}_X.npy` + `test_bin/*.bin` (rejects overlapping splits)
+2. **`train_from_1600.py`** — Welch 83-dim → StandardScaler → MLP on train/val; reports test if exported
 3. **`export_w8_spectral_mlp.py`** — Tiny-NN W8 → `deploy/model.*`, `weights.h`, `spectral_scaler.h`, `acids_class_names.h`
 4. **`make -C deploy`** — builds `spectral_infer` (Welch C + kissfft + scaler + W8)
-5. **`run_c_test_infer.py`** — C inference on all test bins → `artifacts/c_test_report.json`
+5. **`run_c_test_infer.py`** — C inference on all **test** bins → `artifacts/c_test_report.json`
 
 ## Run C inference on samples
 
@@ -181,16 +184,19 @@ RAW_AUDIO_STREAM
 ## Layout
 
 ```text
-data/train/*.txt          # bundled flat streams for run_pipeline.py
+data/train/*.txt          # your RAW_AUDIO_STREAM clips (default pathway)
 data/val/*.txt
-paths.yaml                # ACIDS index paths (edit these)
+data/test/*.txt           # held-out split
+indices/*_index.txt       # optional ACIDS .pt path lists
+paths.yaml                # points at indices/ for run_acids_pipeline.py
 export_acids_indices.py
 train_from_1600.py
 export_w8_spectral_mlp.py
 package_deploy_samples.py
 run_c_test_infer.py
-run_pipeline.py           # train/val from data/*.txt → W8 → smoke C infer
-run_acids_pipeline.py     # full ACIDS .pt indices → train → W8 → C test score
+run_pipeline.py           # data/train|val|test txt → W8 → C test score
+run_acids_pipeline.py     # indices/*.txt .pt lists → train → W8 → C test score
+
 welch_features.py
 load_1600_txt.py
 Tiny-NN-in-C/             # vendored W8 compiler (export only)

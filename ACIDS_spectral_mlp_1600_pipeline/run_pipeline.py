@@ -2,6 +2,12 @@
 """
 Full train → W8 export → package samples → make → smoke infer.
 
+Expects a train / val / test layout under --data_root when possible:
+
+  data/train/*.txt
+  data/val/*.txt
+  data/test/*.txt   # optional but recommended; used for held-out C scoring
+
 Usage:
   python run_pipeline.py
   python3 run_pipeline.py --data_root data --epochs 20
@@ -10,16 +16,41 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import struct
 import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
+
 PKG = Path(__file__).resolve().parent
+sys.path.insert(0, str(PKG))
+
+from load_1600_txt import load_dir  # noqa: E402
 
 
 def run(cmd: list[str], cwd: Path | None = None) -> None:
     print("+", " ".join(cmd), flush=True)
     subprocess.run(cmd, cwd=str(cwd or PKG), check=True)
+
+
+def write_test_bins(test_dir: Path, out_root: Path) -> tuple[Path, Path, Path]:
+    """Write test_bin/*.bin + test_y.npy + test_names.txt for run_c_test_infer."""
+    names, streams, labels = load_dir(test_dir)
+    bin_dir = out_root / "test_bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    for old in bin_dir.glob("*.bin"):
+        old.unlink()
+    for name, stream in zip(names, streams):
+        stem = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
+        with (bin_dir / f"{stem}.bin").open("wb") as f:
+            f.write(struct.pack(f"{len(stream)}f", *stream.astype(np.float32).tolist()))
+    y_path = out_root / "test_y.npy"
+    names_path = out_root / "test_names.txt"
+    np.save(y_path, labels.astype(np.int64))
+    names_path.write_text("\n".join(names) + "\n", encoding="utf-8")
+    print(f"wrote {len(names)} test bins under {bin_dir}")
+    return bin_dir, y_path, names_path
 
 
 def main():
@@ -33,7 +64,12 @@ def main():
         default=PKG / "Tiny-NN-in-C",
         help="Tiny-NN-in-C root (default: vendored Tiny-NN-in-C/ in this folder)",
     )
-    parser.add_argument("--sample_dir", type=Path, default=None, help="Defaults to data_root/val")
+    parser.add_argument(
+        "--sample_dir",
+        type=Path,
+        default=None,
+        help="Smoke samples for deploy/. Defaults to data_root/test if present else val.",
+    )
     parser.add_argument("--max_samples", type=int, default=32)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch_size", type=int, default=256)
@@ -56,9 +92,24 @@ def main():
     parser.add_argument("--skip_package", action="store_true")
     parser.add_argument("--skip_build", action="store_true")
     parser.add_argument("--skip_smoke", action="store_true")
+    parser.add_argument("--skip_test_infer", action="store_true")
     args = parser.parse_args()
 
-    sample_dir = args.sample_dir or (args.data_root / "val")
+    train_dir = args.data_root / "train"
+    val_dir = args.data_root / "val"
+    test_dir = args.data_root / "test"
+    has_test = test_dir.is_dir() and any(test_dir.glob("*.txt"))
+    if not train_dir.is_dir() or not any(train_dir.glob("*.txt")):
+        raise FileNotFoundError(f"missing train txts under {train_dir}")
+    if not val_dir.is_dir() or not any(val_dir.glob("*.txt")):
+        raise FileNotFoundError(f"missing val txts under {val_dir}")
+    if not has_test:
+        print(
+            f"WARNING: no {test_dir}/*.txt — training will use train/val only; "
+            "add a held-out test/ for true train/val/test evaluation."
+        )
+
+    sample_dir = args.sample_dir or (test_dir if has_test else val_dir)
     py = sys.executable
     ckpt = args.artifacts_dir / "spectral_mlp.pth"
 
@@ -126,9 +177,33 @@ def main():
             raise FileNotFoundError(f"missing {infer}; build failed?")
         run([str(infer)], cwd=args.deploy_dir)
 
+    if has_test and not args.skip_test_infer:
+        bin_dir, y_path, names_path = write_test_bins(test_dir, args.artifacts_dir)
+        score_cmd = [
+            py,
+            str(PKG / "run_c_test_infer.py"),
+            "--deploy_dir",
+            str(args.deploy_dir),
+            "--test_bin_dir",
+            str(bin_dir),
+            "--test_y",
+            str(y_path),
+            "--test_names",
+            str(names_path),
+            "--output_json",
+            str(args.artifacts_dir / "c_test_report.json"),
+            "--ckpt_path",
+            str(ckpt),
+        ]
+        if args.class_names is not None:
+            score_cmd.extend(["--class_names", str(args.class_names)])
+        run(score_cmd)
+
     print("\nPipeline complete.")
     print(f"  checkpoint: {ckpt}")
     print(f"  deploy packet (handoff): {args.deploy_dir}")
+    if has_test:
+        print(f"  test report: {args.artifacts_dir / 'c_test_report.json'}")
     print("  Recipient: cd deploy && make && ./spectral_infer")
 
 

@@ -75,18 +75,30 @@ def main():
     parser.add_argument("--skip_package", action="store_true")
     parser.add_argument("--skip_build", action="store_true")
     parser.add_argument("--skip_test_infer", action="store_true")
+    parser.add_argument(
+        "--allow_overlapping_splits",
+        action="store_true",
+        help="Forward to export: allow val==test (not a true three-way split).",
+    )
     args = parser.parse_args()
 
     cfg = {}
-    if args.paths_yaml.exists():
-        with args.paths_yaml.open(encoding="utf-8") as f:
+    paths_yaml = Path(args.paths_yaml)
+    base_dir = paths_yaml.resolve().parent if paths_yaml.exists() else PKG
+    if paths_yaml.exists():
+        with paths_yaml.open(encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
 
-    train_index = args.train_index or Path(cfg["train_index_file"])
-    val_index = args.val_index or Path(cfg["val_index_file"])
-    test_index = args.test_index or Path(cfg["test_index_file"])
+    def resolve_index(path: Path) -> Path:
+        path = Path(path)
+        return path if path.is_absolute() else (base_dir / path).resolve()
+
+    train_index = resolve_index(args.train_index or Path(cfg["train_index_file"]))
+    val_index = resolve_index(args.val_index or Path(cfg["val_index_file"]))
+    test_index = resolve_index(args.test_index or Path(cfg["test_index_file"]))
     py = sys.executable
     ckpt = args.artifacts_dir / "spectral_mlp.pth"
+    print(f"Using splits:\n  train={train_index}\n  val={val_index}\n  test={test_index}")
 
     if not args.skip_export_data:
         cmd = [
@@ -105,6 +117,8 @@ def main():
             "--max_samples",
             str(args.max_export_samples),
         ]
+        if args.allow_overlapping_splits:
+            cmd.append("--allow_overlapping_splits")
         run(cmd)
 
     if not args.skip_train:

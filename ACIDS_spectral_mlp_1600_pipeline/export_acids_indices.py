@@ -39,6 +39,41 @@ def read_index(path: Path) -> list[str]:
     return [ln.strip() for ln in lines if ln.strip()]
 
 
+def assert_disjoint_splits(
+    train_paths: list[str],
+    val_paths: list[str],
+    test_paths: list[str],
+    *,
+    allow_overlap: bool,
+) -> None:
+    """Require a true train/val/test split unless allow_overlap is set."""
+    train_set, val_set, test_set = set(train_paths), set(val_paths), set(test_paths)
+    overlaps = {
+        "train∩val": len(train_set & val_set),
+        "train∩test": len(train_set & test_set),
+        "val∩test": len(val_set & test_set),
+    }
+    if val_paths == test_paths:
+        msg = (
+            "val_index and test_index are identical — not a train/val/test split. "
+            "Point paths.yaml at fixed_partition_index_vehicle_classification "
+            "(disjoint), or pass --allow_overlapping_splits."
+        )
+        if allow_overlap:
+            print(f"WARNING: {msg}")
+            return
+        raise SystemExit(f"ERROR: {msg}")
+    bad = {k: n for k, n in overlaps.items() if n > 0}
+    if bad:
+        msg = f"overlapping samples across splits: {bad}"
+        if allow_overlap:
+            print(f"WARNING: {msg}")
+            return
+        raise SystemExit(
+            f"ERROR: {msg}. Use disjoint indices or --allow_overlapping_splits."
+        )
+
+
 def safe_stem(pt_path: str) -> str:
     stem = Path(pt_path).stem.replace(" ", "_")
     return re.sub(r"[^A-Za-z0-9_\-]", "_", stem)
@@ -128,6 +163,14 @@ def load_paths_yaml(path: Path) -> dict:
         return yaml.safe_load(f)
 
 
+def resolve_index_path(path: Path, base_dir: Path) -> Path:
+    """Resolve index paths relative to the package (or paths.yaml) directory."""
+    path = Path(path)
+    if path.is_absolute():
+        return path
+    return (base_dir / path).resolve()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Export ACIDS indices to 1600 streams")
     parser.add_argument("--paths_yaml", type=Path, default=PKG / "paths.yaml")
@@ -141,21 +184,51 @@ def main():
         default=0,
         help="Cap each split (0 = all). Useful for smoke tests.",
     )
+    parser.add_argument(
+        "--allow_overlapping_splits",
+        action="store_true",
+        help="Allow val==test or other overlap (not recommended).",
+    )
     args = parser.parse_args()
 
     cfg = {}
-    if args.paths_yaml.exists():
-        cfg = load_paths_yaml(args.paths_yaml)
+    paths_yaml = Path(args.paths_yaml)
+    base_dir = paths_yaml.resolve().parent if paths_yaml.exists() else PKG
+    if paths_yaml.exists():
+        cfg = load_paths_yaml(paths_yaml)
 
-    train_index = args.train_index or Path(cfg["train_index_file"])
-    val_index = args.val_index or Path(cfg["val_index_file"])
-    test_index = args.test_index or Path(cfg["test_index_file"])
+    train_index = resolve_index_path(
+        args.train_index or Path(cfg["train_index_file"]), base_dir
+    )
+    val_index = resolve_index_path(
+        args.val_index or Path(cfg["val_index_file"]), base_dir
+    )
+    test_index = resolve_index_path(
+        args.test_index or Path(cfg["test_index_file"]), base_dir
+    )
+
+    train_paths = read_index(train_index)
+    val_paths = read_index(val_index)
+    test_paths = read_index(test_index)
+    assert_disjoint_splits(
+        train_paths,
+        val_paths,
+        test_paths,
+        allow_overlap=args.allow_overlapping_splits,
+    )
+    print(
+        f"splits: train={len(train_paths)} val={len(val_paths)} test={len(test_paths)} "
+        f"(disjoint)"
+    )
 
     args.output_root.mkdir(parents=True, exist_ok=True)
     meta = {
         "train_index_file": str(train_index),
         "val_index_file": str(val_index),
         "test_index_file": str(test_index),
+        "n_train": len(train_paths),
+        "n_val": len(val_paths),
+        "n_test": len(test_paths),
         "used_samples": USED_SAMPLES,
         "expected_flat_before_truncate": EXPECTED_FLAT,
         "channel": 0,

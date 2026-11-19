@@ -189,6 +189,12 @@ def parse_args():
     )
     parser.add_argument("--train_dir", type=Path, default=None)
     parser.add_argument("--val_dir", type=Path, default=None)
+    parser.add_argument(
+        "--test_dir",
+        type=Path,
+        default=None,
+        help="Optional test/*.txt dir (or use data_root/test).",
+    )
     parser.add_argument("--output_dir", type=Path, default=PKG / "artifacts")
     parser.add_argument("--gpu", type=int, default=-1)
     parser.add_argument("--epochs", type=int, default=50)
@@ -214,8 +220,19 @@ def load_split_streams(
     data_root: Path | None,
     train_dir: Path | None,
     val_dir: Path | None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Return train_streams, y_train, val_streams, y_val."""
+    test_dir: Path | None = None,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray | None,
+    np.ndarray | None,
+]:
+    """Return train/val streams+labels and optional test streams+labels.
+
+    Checkpoint selection uses val only. Test is evaluated after training when present.
+    """
     if export_root is not None:
         export_root = Path(export_root)
         train_x = export_root / "train_X.npy"
@@ -225,20 +242,32 @@ def load_split_streams(
         for p in (train_x, train_y, val_x, val_y):
             if not p.exists():
                 raise FileNotFoundError(f"missing {p}; run export_acids_indices.py first")
+        test_x = export_root / "test_X.npy"
+        test_y = export_root / "test_y.npy"
+        test_streams = test_labels = None
+        if test_x.exists() and test_y.exists():
+            test_streams = np.load(test_x).astype(np.float32)
+            test_labels = np.load(test_y).astype(np.int64)
         return (
             np.load(train_x).astype(np.float32),
             np.load(train_y).astype(np.int64),
             np.load(val_x).astype(np.float32),
             np.load(val_y).astype(np.int64),
+            test_streams,
+            test_labels,
         )
 
     tdir = train_dir or (Path(data_root) / "train" if data_root else None)
     vdir = val_dir or (Path(data_root) / "val" if data_root else None)
+    te_dir = test_dir or (Path(data_root) / "test" if data_root else None)
     if tdir is None or vdir is None:
         raise ValueError("Provide --export_root or --data_root / --train_dir+--val_dir")
     _, train_streams, y_train = load_dir(tdir)
     _, val_streams, y_val = load_dir(vdir)
-    return train_streams, y_train, val_streams, y_val
+    test_streams = test_labels = None
+    if te_dir is not None and Path(te_dir).is_dir() and any(Path(te_dir).glob("*.txt")):
+        _, test_streams, test_labels = load_dir(te_dir)
+    return train_streams, y_train, val_streams, y_val, test_streams, test_labels
 
 
 def eval_arrays(model, scaler, X, y, device):
@@ -302,14 +331,32 @@ def main():
     device = "cpu" if args.gpu < 0 else f"cuda:{args.gpu}"
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    train_streams, y_train, val_streams, y_val = load_split_streams(
-        args.export_root, args.data_root, args.train_dir, args.val_dir
+    (
+        train_streams,
+        y_train,
+        val_streams,
+        y_val,
+        test_streams,
+        y_test,
+    ) = load_split_streams(
+        args.export_root,
+        args.data_root,
+        args.train_dir,
+        args.val_dir,
+        args.test_dir,
     )
     if train_streams.ndim != 2 or train_streams.shape[1] != 1600:
         raise ValueError(f"train streams expected (N,1600), got {train_streams.shape}")
     if val_streams.ndim != 2 or val_streams.shape[1] != 1600:
         raise ValueError(f"val streams expected (N,1600), got {val_streams.shape}")
-    logger.info("Loaded train=%d val=%d streams", len(y_train), len(y_val))
+    if test_streams is not None and (test_streams.ndim != 2 or test_streams.shape[1] != 1600):
+        raise ValueError(f"test streams expected (N,1600), got {test_streams.shape}")
+    logger.info(
+        "Loaded train=%d val=%d test=%s streams",
+        len(y_train),
+        len(y_val),
+        str(len(y_test)) if y_test is not None else "none",
+    )
 
     num_classes = resolve_num_classes(y_train, y_val, args.num_classes)
     class_names = resolve_class_names(num_classes, args.class_names)
@@ -334,6 +381,10 @@ def main():
 
     train_m = eval_arrays(model, scaler, X_train, y_train, device)
     val_m = eval_arrays(model, scaler, X_val, y_val, device)
+    test_m = None
+    if test_streams is not None and y_test is not None:
+        X_test = streams_to_features(test_streams)
+        test_m = eval_arrays(model, scaler, X_test, y_test, device)
 
     ckpt_path = args.output_dir / "spectral_mlp.pth"
     torch.save(
@@ -356,6 +407,7 @@ def main():
     report = {
         "train_samples": len(y_train),
         "val_samples": len(y_val),
+        "test_samples": int(len(y_test)) if y_test is not None else 0,
         "train_accuracy": train_m["accuracy"],
         "train_macro_f1": train_m["macro_f1"],
         "val_accuracy": val_m["accuracy"],
@@ -365,16 +417,29 @@ def main():
         "checkpoint": str(ckpt_path),
         "frontend": "welch n_fft=160 hop=80",
         "feature_dim": FEATURE_DIM,
+        "split_note": "train for fit; val for checkpoint selection; test held out",
     }
+    if test_m is not None:
+        report["test_accuracy"] = test_m["accuracy"]
+        report["test_macro_f1"] = test_m["macro_f1"]
     (args.output_dir / "train_report.json").write_text(
         json.dumps(report, indent=2) + "\n", encoding="utf-8"
     )
-    logger.info(
-        "Done. train_acc=%.4f val_acc=%.4f num_classes=%d",
-        train_m["accuracy"],
-        val_m["accuracy"],
-        num_classes,
-    )
+    if test_m is not None:
+        logger.info(
+            "Done. train_acc=%.4f val_acc=%.4f test_acc=%.4f num_classes=%d",
+            train_m["accuracy"],
+            val_m["accuracy"],
+            test_m["accuracy"],
+            num_classes,
+        )
+    else:
+        logger.info(
+            "Done. train_acc=%.4f val_acc=%.4f num_classes=%d (no test split)",
+            train_m["accuracy"],
+            val_m["accuracy"],
+            num_classes,
+        )
 
 
 if __name__ == "__main__":
